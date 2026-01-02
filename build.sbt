@@ -38,6 +38,9 @@ lazy val root = project
     schema.js,
     schema.native,
     `schema-avro`,
+    chunk.jvm,
+    chunk.js,
+    chunk.native,
     streams.jvm,
     streams.js,
     streams.native,
@@ -99,6 +102,22 @@ lazy val schema = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     libraryDependencies ++= Seq(
       "io.github.cquiroz" %%% "scala-java-locales"         % "1.5.4" % Test,
       "io.github.cquiroz" %%% "locales-full-currencies-db" % "1.5.4" % Test
+    )
+  )
+
+lazy val chunk = crossProject(JSPlatform, JVMPlatform, NativePlatform)
+  .crossType(CrossType.Pure)
+  .settings(stdSettings("zio-blocks-chunk"))
+  .settings(crossProjectSettings)
+  .settings(buildInfoSettings("zio.blocks.chunk"))
+  .enablePlugins(BuildInfoPlugin)
+  .jvmSettings(mimaSettings(failOnProblem = false))
+  .jsSettings(jsSettings)
+  .nativeSettings(nativeSettings)
+  .settings(
+    libraryDependencies ++= Seq(
+      "dev.zio" %%% "zio-test"     % "2.1.24" % Test,
+      "dev.zio" %%% "zio-test-sbt" % "2.1.24" % Test
     )
   )
 
