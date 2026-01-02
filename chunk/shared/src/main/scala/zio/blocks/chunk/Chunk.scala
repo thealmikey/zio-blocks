@@ -19,7 +19,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
     else {
       val newDepth = Math.max(self.depth, that.depth) + 1
       if (newDepth > Chunk.MaxDepthBeforeMaterialize) {
-        Chunk.fromArray(self.toArray[AnyRef](ClassTag.AnyRef)).concat(that)
+        Chunk.fromArray(self.toArray[AnyRef](ClassTag.AnyRef)).concat(that).asInstanceOf[Chunk[A1]]
       } else {
         self.concat(that)
       }
@@ -39,9 +39,13 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   def filter(f: A => Boolean): Chunk[A] = {
-    val builder = ChunkBuilder.make[A]()
-    foreach { a => if (f(a)) builder.addOne(a) }
-    builder.result()
+    val builder = ChunkBuilder.make[AnyRef]()
+    val iter    = chunkIterator
+    while (iter.hasNext) {
+      val a = iter.next()
+      if (f(a)) builder.addOne(a.asInstanceOf[AnyRef])
+    }
+    builder.result().asInstanceOf[Chunk[A]]
   }
 
   def map[B: ClassTag](f: A => B): Chunk[B] = {
@@ -89,14 +93,14 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   def drop(n: Int): Chunk[A] = slice(n, length)
 
   def takeWhile(f: A => Boolean): Chunk[A] = {
-    val builder = ChunkBuilder.make[A]()
+    val builder = ChunkBuilder.make[AnyRef]()
     val iter    = chunkIterator
     var loop    = true
     while (iter.hasNext && loop) {
       val a = iter.next()
-      if (f(a)) builder.addOne(a) else loop = false
+      if (f(a)) builder.addOne(a.asInstanceOf[AnyRef]) else loop = false
     }
-    builder.result()
+    builder.result().asInstanceOf[Chunk[A]]
   }
 
   def dropWhile(f: A => Boolean): Chunk[A] = {
@@ -114,14 +118,14 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   def splitAt(n: Int): (Chunk[A], Chunk[A]) = (take(n), drop(n))
 
   def partition(f: A => Boolean): (Chunk[A], Chunk[A]) = {
-    val left  = ChunkBuilder.make[A]()
-    val right = ChunkBuilder.make[A]()
+    val left  = ChunkBuilder.make[AnyRef]()
+    val right = ChunkBuilder.make[AnyRef]()
     val iter  = chunkIterator
     while (iter.hasNext) {
       val a = iter.next()
-      if (f(a)) left.addOne(a) else right.addOne(a)
+      if (f(a)) left.addOne(a.asInstanceOf[AnyRef]) else right.addOne(a.asInstanceOf[AnyRef])
     }
-    (left.result(), right.result())
+    (left.result().asInstanceOf[Chunk[A]], right.result().asInstanceOf[Chunk[A]])
   }
 
   def partitionMap[B: ClassTag, C: ClassTag](f: A => Either[B, C]): (Chunk[B], Chunk[C]) = {
@@ -415,13 +419,13 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   def reverse: Chunk[A] = {
     if (length <= 1) self
     else {
-      val builder = ChunkBuilder.make[A](length)
-      var i = length - 1
+      val builder = ChunkBuilder.make[AnyRef](length)
+      var i       = length - 1
       while (i >= 0) {
-        builder.addOne(self(i))
+        builder.addOne(self(i).asInstanceOf[AnyRef])
         i -= 1
       }
-      builder.result()
+      builder.result().asInstanceOf[Chunk[A]]
     }
   }
 
@@ -451,15 +455,15 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   def dedupe: Chunk[A] = {
     if (isEmpty) self
     else {
-      val builder = ChunkBuilder.make[A]()
+      val builder = ChunkBuilder.make[AnyRef]()
       var last: Option[A] = None
       foreach { a =>
         if (last.isEmpty || last.get != a) {
-          builder.addOne(a)
+          builder.addOne(a.asInstanceOf[AnyRef])
           last = Some(a)
         }
       }
-      builder.result()
+      builder.result().asInstanceOf[Chunk[A]]
     }
   }
 
@@ -819,7 +823,7 @@ object Chunk {
     }
   }
 
-  private[chunk] final class Arr[A](private val array: Array[AnyRef]) extends Chunk[A] {
+  private[chunk] final class Arr[A](private[chunk] val array: Array[AnyRef]) extends Chunk[A] {
     def length: Int = array.length
     def apply(index: Int): A = array(index).asInstanceOf[A]
     override def foreach[U](f: A => U): Unit = {
@@ -896,7 +900,7 @@ object Chunk {
     }
   }
 
-  private[chunk] final class ByteArray(private val array: Array[Byte]) extends Chunk[Byte] {
+  private[chunk] final class ByteArray(private[chunk] val array: Array[Byte]) extends Chunk[Byte] {
     def length: Int = array.length
     def apply(index: Int): Byte = array(index)
     override def foreach[U](f: Byte => U): Unit = {
@@ -961,7 +965,7 @@ object Chunk {
     }
   }
 
-  private[chunk] final class CharArray(private val array: Array[Char]) extends Chunk[Char] {
+  private[chunk] final class CharArray(private[chunk] val array: Array[Char]) extends Chunk[Char] {
     def length: Int = array.length
     def apply(index: Int): Char = array(index)
     override def foreach[U](f: Char => U): Unit = {
@@ -1026,7 +1030,7 @@ object Chunk {
     }
   }
 
-  private[chunk] final class ShortArray(private val array: Array[Short]) extends Chunk[Short] {
+  private[chunk] final class ShortArray(private[chunk] val array: Array[Short]) extends Chunk[Short] {
     def length: Int = array.length
     def apply(index: Int): Short = array(index)
     override def foreach[U](f: Short => U): Unit = {
@@ -1091,7 +1095,7 @@ object Chunk {
     }
   }
 
-  private[chunk] final class IntArray(private val array: Array[Int]) extends Chunk[Int] {
+  private[chunk] final class IntArray(private[chunk] val array: Array[Int]) extends Chunk[Int] {
     def length: Int = array.length
     def apply(index: Int): Int = array(index)
     override def foreach[U](f: Int => U): Unit = {
@@ -1156,7 +1160,7 @@ object Chunk {
     }
   }
 
-  private[chunk] final class LongArray(private val array: Array[Long]) extends Chunk[Long] {
+  private[chunk] final class LongArray(private[chunk] val array: Array[Long]) extends Chunk[Long] {
     def length: Int = array.length
     def apply(index: Int): Long = array(index)
     override def foreach[U](f: Long => U): Unit = {
@@ -1221,7 +1225,7 @@ object Chunk {
     }
   }
 
-  private[chunk] final class FloatArray(private val array: Array[Float]) extends Chunk[Float] {
+  private[chunk] final class FloatArray(private[chunk] val array: Array[Float]) extends Chunk[Float] {
     def length: Int = array.length
     def apply(index: Int): Float = array(index)
     override def foreach[U](f: Float => U): Unit = {
@@ -1286,7 +1290,7 @@ object Chunk {
     }
   }
 
-  private[chunk] final class DoubleArray(private val array: Array[Double]) extends Chunk[Double] {
+  private[chunk] final class DoubleArray(private[chunk] val array: Array[Double]) extends Chunk[Double] {
     def length: Int = array.length
     def apply(index: Int): Double = array(index)
     override def foreach[U](f: Double => U): Unit = {
@@ -1351,7 +1355,7 @@ object Chunk {
     }
   }
 
-  private[chunk] final class BooleanArray(private val array: Array[Boolean]) extends Chunk[Boolean] {
+  private[chunk] final class BooleanArray(private[chunk] val array: Array[Boolean]) extends Chunk[Boolean] {
     def length: Int = array.length
     def apply(index: Int): Boolean = array(index)
     override def foreach[U](f: Boolean => U): Unit = {
@@ -1471,19 +1475,19 @@ object Chunk {
         val wordLen = (minLen + l.bitWidth - 1) / l.bitWidth
         val leftWords = l.chunk.asInstanceOf[Chunk[Any]]
         val rightWords = r.chunk.asInstanceOf[Chunk[Any]]
-        val resWords = new Array[Any](wordLen)(l.tag.asInstanceOf[ClassTag[Any]])
+        val resWords = l.tag.asInstanceOf[ClassTag[Any]].newArray(wordLen)
         var i = 0
         while (i < wordLen) {
           val lw = leftWords(i)
           val rw = rightWords(i)
-          resWords(i) = opType match {
+          resWords(i) = (opType match {
             case 0 => ops.and(lw, rw)
             case 1 => ops.or(lw, rw)
             case _ => ops.xor(lw, rw)
-          }
+          }).asInstanceOf[AnyRef]
           i += 1
         }
-        new ChunkPackedBoolean(fromArray(resWords), minLen, l.bitWidth)(l.tag, l.ops)
+        new ChunkPackedBoolean(Chunk.fromArray(resWords.asInstanceOf[Array[AnyRef]])(ClassTag.AnyRef).asInstanceOf[Chunk[t1]], minLen, l.bitWidth)(l.tag, l.ops)
       case _ =>
         val len = Math.min(left.length, right.length)
         val builder = new BooleanChunkBuilder(len)
@@ -1615,7 +1619,7 @@ object ChunkBuilder {
     builder.asInstanceOf[ChunkBuilder[A]]
   }
 
-  private final class GenericChunkBuilder[A: ClassTag](initialCapacity: Int) extends ChunkBuilder[A] {
+  private[chunk] final class GenericChunkBuilder[A: ClassTag](initialCapacity: Int) extends ChunkBuilder[A] {
     private[this] val builder = ArrayBuilder.make[A]
     def addOne(a: A): this.type = { builder += a; this }
     def result(): Chunk[A] = {
@@ -1626,7 +1630,7 @@ object ChunkBuilder {
     }
   }
 
-  private final class ByteChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Byte] {
+  private[chunk] final class ByteChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Byte] {
     private[this] val builder = ArrayBuilder.make[Byte]
     def addOne(a: Byte): this.type = { builder += a; this }
     def result(): Chunk[Byte] = {
@@ -1637,7 +1641,7 @@ object ChunkBuilder {
     }
   }
 
-  private final class ShortChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Short] {
+  private[chunk] final class ShortChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Short] {
     private[this] val builder = ArrayBuilder.make[Short]
     def addOne(a: Short): this.type = { builder += a; this }
     def result(): Chunk[Short] = {
@@ -1648,7 +1652,7 @@ object ChunkBuilder {
     }
   }
 
-  private final class IntChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Int] {
+  private[chunk] final class IntChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Int] {
     private[this] val builder = ArrayBuilder.make[Int]
     def addOne(a: Int): this.type = { builder += a; this }
     def result(): Chunk[Int] = {
@@ -1659,7 +1663,7 @@ object ChunkBuilder {
     }
   }
 
-  private final class LongChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Long] {
+  private[chunk] final class LongChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Long] {
     private[this] val builder = ArrayBuilder.make[Long]
     def addOne(a: Long): this.type = { builder += a; this }
     def result(): Chunk[Long] = {
@@ -1670,7 +1674,7 @@ object ChunkBuilder {
     }
   }
 
-  private final class FloatChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Float] {
+  private[chunk] final class FloatChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Float] {
     private[this] val builder = ArrayBuilder.make[Float]
     def addOne(a: Float): this.type = { builder += a; this }
     def result(): Chunk[Float] = {
@@ -1681,7 +1685,7 @@ object ChunkBuilder {
     }
   }
 
-  private final class DoubleChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Double] {
+  private[chunk] final class DoubleChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Double] {
     private[this] val builder = ArrayBuilder.make[Double]
     def addOne(a: Double): this.type = { builder += a; this }
     def result(): Chunk[Double] = {
@@ -1692,7 +1696,7 @@ object ChunkBuilder {
     }
   }
 
-  private final class BooleanChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Boolean] {
+  private[chunk] final class BooleanChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Boolean] {
     private[this] val builder = ArrayBuilder.make[Boolean]
     def addOne(a: Boolean): this.type = { builder += a; this }
     def result(): Chunk[Boolean] = {
@@ -1703,7 +1707,7 @@ object ChunkBuilder {
     }
   }
 
-  private final class CharChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Char] {
+  private[chunk] final class CharChunkBuilder(initialCapacity: Int) extends ChunkBuilder[Char] {
     private[this] val builder = ArrayBuilder.make[Char]
     def addOne(a: Char): this.type = { builder += a; this }
     def result(): Chunk[Char] = {
