@@ -3,6 +3,7 @@ package zio.blocks.chunk
 import scala.reflect.ClassTag
 import scala.collection.mutable.ArrayBuilder
 import java.util.concurrent.atomic.AtomicInteger
+import scala.util.hashing.MurmurHash3
 
 sealed abstract class Chunk[+A] extends Serializable { self =>
 
@@ -286,6 +287,215 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
     array
   }
 
+  def toList: List[A] = {
+    val builder = List.newBuilder[A]
+    foreach(builder.addOne)
+    builder.result()
+  }
+
+  def toVector: Vector[A] = {
+    val builder = Vector.newBuilder[A]
+    foreach(builder.addOne)
+    builder.result()
+  }
+
+  def toSet[B >: A]: Set[B] = {
+    val builder = Set.newBuilder[B]
+    foreach(builder.addOne)
+    builder.result()
+  }
+
+  def toMap[K, V](implicit ev: A <:< (K, V)): Map[K, V] = {
+    val builder = Map.newBuilder[K, V]
+    foreach(a => builder.addOne(ev(a)))
+    builder.result()
+  }
+
+  def asString(implicit ev: A <:< Char): String = {
+    val sb = new StringBuilder(length)
+    foreach(a => sb.append(ev(a)))
+    sb.toString()
+  }
+
+  def asBase64String(implicit ev: A <:< Byte): String = {
+    java.util.Base64.getEncoder.encodeToString(this.toArray[Byte])
+  }
+
+  def toBinaryString(implicit ev: A <:< Byte): String = {
+    val sb = new StringBuilder(length * 8)
+    foreach { a =>
+      val b = ev(a)
+      var i = 7
+      while (i >= 0) {
+        sb.append(if (((b >> i) & 1) == 1) '1' else '0')
+        i -= 1
+      }
+    }
+    sb.toString()
+  }
+
+  def exists(p: A => Boolean): Boolean = {
+    val iter = chunkIterator
+    var found = false
+    while (iter.hasNext && !found) {
+      if (p(iter.next())) found = true
+    }
+    found
+  }
+
+  def forall(p: A => Boolean): Boolean = {
+    val iter = chunkIterator
+    var all = true
+    while (iter.hasNext && all) {
+      if (!p(iter.next())) all = false
+    }
+    all
+  }
+
+  def find(p: A => Boolean): Option[A] = {
+    val iter = chunkIterator
+    while (iter.hasNext) {
+      val a = iter.next()
+      if (p(a)) return Some(a)
+    }
+    None
+  }
+
+  def indexOf[B >: A](elem: B): Int = indexWhere(_ == elem)
+
+  def indexWhere(p: A => Boolean): Int = {
+    val iter = chunkIterator
+    var i = 0
+    while (iter.hasNext) {
+      if (p(iter.next())) return i
+      i += 1
+    }
+    -1
+  }
+
+  def contains[B >: A](elem: B): Boolean = exists(_ == elem)
+
+  def corresponds[B](that: Chunk[B])(p: (A, B) => Boolean): Boolean = {
+    if (this.length != that.length) false
+    else {
+      var i = 0
+      while (i < length) {
+        if (!p(this(i), that(i))) return false
+        i += 1
+      }
+      true
+    }
+  }
+
+  def startsWith[B >: A](that: Chunk[B]): Boolean = {
+    if (that.length > this.length) false
+    else {
+      var i = 0
+      while (i < that.length) {
+        if (this(i) != that(i)) return false
+        i += 1
+      }
+      true
+    }
+  }
+
+  def endsWith[B >: A](that: Chunk[B]): Boolean = {
+    if (that.length > this.length) false
+    else {
+      val offset = this.length - that.length
+      var i = 0
+      while (i < that.length) {
+        if (this(offset + i) != that(i)) return false
+        i += 1
+      }
+      true
+    }
+  }
+
+  def reverse: Chunk[A] = {
+    if (length <= 1) self
+    else {
+      val builder = ChunkBuilder.make[A](length)
+      var i = length - 1
+      while (i >= 0) {
+        builder.addOne(self(i))
+        i -= 1
+      }
+      builder.result()
+    }
+  }
+
+  def sorted[B >: A](implicit ord: Ordering[B], tag: ClassTag[B]): Chunk[B] = {
+    val array = toArray[B]
+    scala.util.Sorting.quickSort(array)
+    Chunk.fromArray(array)
+  }
+
+  def sortBy[B](f: A => B)(implicit ord: Ordering[B], tag: ClassTag[A]): Chunk[A] = {
+    val array = toArray[A]
+    scala.util.Sorting.stableSort(array, (x: A, y: A) => ord.lt(f(x), f(y)))
+    Chunk.fromArray(array)
+  }
+
+  def sortWith(lt: (A, A) => Boolean)(implicit tag: ClassTag[A]): Chunk[A] = {
+    val array = toArray[A]
+    scala.util.Sorting.stableSort(array, lt)
+    Chunk.fromArray(array)
+  }
+
+  def distinct: Chunk[A] = {
+    val set = new java.util.HashSet[A]()
+    filter(set.add)
+  }
+
+  def dedupe: Chunk[A] = {
+    if (isEmpty) self
+    else {
+      val builder = ChunkBuilder.make[A]()
+      var last: Option[A] = None
+      foreach { a =>
+        if (last.isEmpty || last.get != a) {
+          builder.addOne(a)
+          last = Some(a)
+        }
+      }
+      builder.result()
+    }
+  }
+
+  override def hashCode(): Int = {
+    val iter = chunkIterator
+    var h = MurmurHash3.seqSeed
+    while (iter.hasNext) {
+      h = MurmurHash3.mix(h, iter.next().hashCode())
+    }
+    MurmurHash3.finalizeHash(h, length)
+  }
+
+  override def equals(that: Any): Boolean = that match {
+    case that: Chunk[_] if this.length == that.length =>
+      var i = 0
+      while (i < length) {
+        if (this(i) != that(i)) return false
+        i += 1
+      }
+      true
+    case _ => false
+  }
+
+  override def toString: String = {
+    val sb = new StringBuilder("Chunk(")
+    val iter = chunkIterator
+    var first = true
+    while (iter.hasNext) {
+      if (!first) sb.append(", ")
+      sb.append(iter.next())
+      first = false
+    }
+    sb.append(")")
+    sb.toString()
+  }
+
   def asBitsByte(implicit ev: A <:< Boolean): Chunk[Boolean] =
     Chunk.asPacked[Byte](self.asInstanceOf[Chunk[Boolean]], 8)
   def asBitsInt(implicit ev: A <:< Boolean): Chunk[Boolean] =
@@ -323,7 +533,75 @@ object Chunk {
   private[chunk] val MaxDepthBeforeMaterialize = 128
   private[chunk] val UpdateBufferSize = 256
 
+  def apply[A: ClassTag](as: A*): Chunk[A] = fromIterable(as)
+
   def empty[A]: Chunk[A] = Empty
+
+  def single[A](a: A): Chunk[A] = Singleton(a)
+
+  def succeed[A](a: A): Chunk[A] = Singleton(a)
+
+  def fromIterable[A: ClassTag](it: Iterable[A]): Chunk[A] = {
+    if (it.isEmpty) empty
+    else {
+      val builder = ChunkBuilder.make[A](it.size)
+      it.foreach(builder.addOne)
+      builder.result()
+    }
+  }
+
+  def fromIterator[A: ClassTag](it: Iterator[A]): Chunk[A] = {
+    if (!it.hasNext) empty
+    else {
+      val builder = ChunkBuilder.make[A]()
+      while (it.hasNext) builder.addOne(it.next())
+      builder.result()
+    }
+  }
+
+  def fill[A: ClassTag](n: Int)(a: => A): Chunk[A] = {
+    if (n <= 0) empty
+    else {
+      val builder = ChunkBuilder.make[A](n)
+      var i = 0
+      while (i < n) {
+        builder.addOne(a)
+        i += 1
+      }
+      builder.result()
+    }
+  }
+
+  def iterate[A: ClassTag](initial: A, n: Int)(f: A => A): Chunk[A] = {
+    if (n <= 0) empty
+    else {
+      val builder = ChunkBuilder.make[A](n)
+      var cur = initial
+      var i = 0
+      while (i < n) {
+        builder.addOne(cur)
+        cur = f(cur)
+        i += 1
+      }
+      builder.result()
+    }
+  }
+
+  def unfold[S, A: ClassTag](s: S)(f: S => Option[(A, S)]): Chunk[A] = {
+    val builder = ChunkBuilder.make[A]()
+    var cur = s
+    var loop = true
+    while (loop) {
+      f(cur) match {
+        case Some((a, nextS)) =>
+          builder.addOne(a)
+          cur = nextS
+        case None =>
+          loop = false
+      }
+    }
+    builder.result()
+  }
 
   def fromArray[A: ClassTag](array: Array[A]): Chunk[A] = {
     if (array.length == 0) empty
