@@ -2,12 +2,40 @@ package zio.blocks.chunk
 
 import scala.reflect.ClassTag
 import scala.collection.mutable.ArrayBuilder
+import java.util.concurrent.atomic.AtomicInteger
 
 sealed abstract class Chunk[+A] extends Serializable { self =>
 
   def length: Int
 
+  def depth: Int = 0
+
   def apply(index: Int): A
+
+  final def ++[A1 >: A](that: Chunk[A1]): Chunk[A1] = {
+    if (self.isEmpty) that
+    else if (that.isEmpty) self
+    else {
+      val newDepth = Math.max(self.depth, that.depth) + 1
+      if (newDepth > Chunk.MaxDepthBeforeMaterialize) {
+        Chunk.fromArray(self.toArray[AnyRef](ClassTag.AnyRef)).concat(that)
+      } else {
+        self.concat(that)
+      }
+    }
+  }
+
+  protected def concat[A1 >: A](that: Chunk[A1]): Chunk[A1] =
+    Chunk.Concat(self, that)
+
+  final def slice(from: Int, until: Int): Chunk[A] = {
+    val low  = Math.max(from, 0)
+    val high = Math.min(until, length)
+    val len  = Math.max(0, high - low)
+    if (len == 0) Chunk.empty
+    else if (low == 0 && high == length) self
+    else Chunk.Slice(self, low, len)
+  }
 
   def filter(f: A => Boolean): Chunk[A] = {
     val builder = ChunkBuilder.make[A]()
@@ -90,6 +118,191 @@ object Chunk {
   private[chunk] val UpdateBufferSize = 256
 
   def empty[A]: Chunk[A] = Empty
+
+  def fromArray[A: ClassTag](array: Array[A]): Chunk[A] = {
+    if (array.length == 0) empty
+    else if (array.length == 1) Singleton(array(0))
+    else {
+      val tag = implicitly[ClassTag[A]]
+      if (Tags.isByte(tag)) new ByteArray(array.asInstanceOf[Array[Byte]]).asInstanceOf[Chunk[A]]
+      else if (Tags.isChar(tag)) new CharArray(array.asInstanceOf[Array[Char]]).asInstanceOf[Chunk[A]]
+      else if (Tags.isShort(tag)) new ShortArray(array.asInstanceOf[Array[Short]]).asInstanceOf[Chunk[A]]
+      else if (Tags.isInt(tag)) new IntArray(array.asInstanceOf[Array[Int]]).asInstanceOf[Chunk[A]]
+      else if (Tags.isLong(tag)) new LongArray(array.asInstanceOf[Array[Long]]).asInstanceOf[Chunk[A]]
+      else if (Tags.isFloat(tag)) new FloatArray(array.asInstanceOf[Array[Float]]).asInstanceOf[Chunk[A]]
+      else if (Tags.isDouble(tag)) new DoubleArray(array.asInstanceOf[Array[Double]]).asInstanceOf[Chunk[A]]
+      else if (Tags.isBoolean(tag)) new BooleanArray(array.asInstanceOf[Array[Boolean]]).asInstanceOf[Chunk[A]]
+      else new Arr[A](array.asInstanceOf[Array[AnyRef]])
+    }
+  }
+
+  private[chunk] final case class Concat[A](left: Chunk[A], right: Chunk[A]) extends Chunk[A] {
+    val length: Int = left.length + right.length
+    override val depth: Int = Math.max(left.depth, right.depth) + 1
+
+    def apply(index: Int): A =
+      if (index < left.length) left(index) else right(index - left.length)
+
+    def chunkIterator: ChunkIterator[A] = new ChunkIterator[A] {
+      private[this] var currIter = left.chunkIterator
+      private[this] var onLeft   = true
+      def hasNext: Boolean = currIter.hasNext || (onLeft && right.isNotEmpty)
+      def next(): A = {
+        if (!currIter.hasNext && onLeft) {
+          onLeft = false
+          currIter = right.chunkIterator
+        }
+        currIter.next()
+      }
+    }
+  }
+
+  private[chunk] final case class Slice[A](chunk: Chunk[A], offset: Int, length: Int) extends Chunk[A] {
+    override def depth: Int = chunk.depth
+
+    def apply(index: Int): A = {
+      if (index < 0 || index >= length) throw new IndexOutOfBoundsException(index.toString)
+      chunk(index + offset)
+    }
+
+    def chunkIterator: ChunkIterator[A] = new ChunkIterator[A] {
+      private[this] var i = 0
+      def hasNext: Boolean = i < length
+      def next(): A = {
+        if (!hasNext) throw new NoSuchElementException()
+        val a = chunk(i + offset)
+        i += 1
+        a
+      }
+    }
+
+    override def toArray[B >: A: ClassTag]: Array[B] = {
+      val target = new Array[B](length)
+      val tag    = implicitly[ClassTag[B]]
+      if (Tags.isAnyRef(tag)) {
+        chunk match {
+          case arr: Arr[_] =>
+            System.arraycopy(arr.array, offset, target, 0, length)
+          case b: ByteArray if Tags.isByte(tag) =>
+            System.arraycopy(b.array, offset, target, 0, length)
+          case _ =>
+            copyToArray(target)
+        }
+      } else {
+        copyToArray(target)
+      }
+      target
+    }
+
+    private def copyToArray[B >: A](target: Array[B]): Unit = {
+      var i = 0
+      while (i < length) {
+        target(i) = chunk(i + offset)
+        i += 1
+      }
+    }
+  }
+
+  private[chunk] final class AppendN[A](
+    private[chunk] val buffer: Array[AnyRef],
+    private[chunk] val refCount: AtomicInteger,
+    val length: Int
+  ) extends Chunk[A] {
+    def apply(index: Int): A = {
+      if (index < 0 || index >= length) throw new IndexOutOfBoundsException(index.toString)
+      buffer(index).asInstanceOf[A]
+    }
+
+    override protected def concat[A1 >: A](that: Chunk[A1]): Chunk[A1] = {
+      if (length < buffer.length && refCount.get() == 1) {
+        that match {
+          case Singleton(v) =>
+            buffer(length) = v.asInstanceOf[AnyRef]
+            new AppendN(buffer, refCount, length + 1)
+          case _ => super.concat(that)
+        }
+      } else super.concat(that)
+    }
+
+    def chunkIterator: ChunkIterator[A] = new ChunkIterator[A] {
+      private[this] var i = 0
+      def hasNext: Boolean = i < length
+      def next(): A = {
+        if (!hasNext) throw new NoSuchElementException()
+        val a = buffer(i).asInstanceOf[A]
+        i += 1
+        a
+      }
+    }
+
+    override def toArray[B >: A: ClassTag]: Array[B] = {
+      val target = new Array[B](length)
+      System.arraycopy(buffer, 0, target, 0, length)
+      target
+    }
+  }
+
+  private[chunk] final class PrependN[A](
+    private[chunk] val buffer: Array[AnyRef],
+    private[chunk] val refCount: AtomicInteger,
+    private[chunk] val startIndex: Int,
+    val length: Int
+  ) extends Chunk[A] {
+    def apply(index: Int): A = {
+      if (index < 0 || index >= length) throw new IndexOutOfBoundsException(index.toString)
+      buffer(startIndex + index).asInstanceOf[A]
+    }
+
+    override protected def concat[A1 >: A](that: Chunk[A1]): Chunk[A1] = {
+      val selfChunk = this.asInstanceOf[Chunk[A1]]
+      if (startIndex > 0 && refCount.get() == 1) {
+        selfChunk match {
+          case _ if that.length == 1 =>
+            val v = that(0)
+            val newStart = startIndex - 1
+            buffer(newStart) = v.asInstanceOf[AnyRef]
+            new PrependN(buffer, refCount, newStart, length + 1).asInstanceOf[Chunk[A1]]
+          case _ => super.concat(that)
+        }
+      } else super.concat(that)
+    }
+
+    def chunkIterator: ChunkIterator[A] = new ChunkIterator[A] {
+      private[this] var i = 0
+      def hasNext: Boolean = i < length
+      def next(): A = {
+        if (!hasNext) throw new NoSuchElementException()
+        val a = buffer(startIndex + i).asInstanceOf[A]
+        i += 1
+        a
+      }
+    }
+
+    override def toArray[B >: A: ClassTag]: Array[B] = {
+      val target = new Array[B](length)
+      System.arraycopy(buffer, startIndex, target, 0, length)
+      target
+    }
+  }
+
+  private[chunk] final case class Update[A](chunk: Chunk[A], index: Int, value: A) extends Chunk[A] {
+    override def depth: Int = chunk.depth + 1
+    def length: Int = chunk.length
+    def apply(i: Int): A = {
+      if (i < 0 || i >= length) throw new IndexOutOfBoundsException(i.toString)
+      if (i == index) value else chunk(i)
+    }
+    def chunkIterator: ChunkIterator[A] = new ChunkIterator[A] {
+      private[this] var i = 0
+      def hasNext: Boolean = i < length
+      def next(): A = {
+        if (!hasNext) throw new NoSuchElementException()
+        val a = if (i == index) value else chunk(i)
+        i += 1
+        a
+      }
+    }
+  }
 
   private[chunk] case object Empty extends Chunk[Nothing] {
     def length: Int = 0
@@ -755,6 +968,7 @@ object Chunk {
     def isDouble[A](implicit tag: ClassTag[A]): Boolean  = tag == ClassTag.Double
     def isBoolean[A](implicit tag: ClassTag[A]): Boolean = tag == ClassTag.Boolean
     def isChar[A](implicit tag: ClassTag[A]): Boolean    = tag == ClassTag.Char
+    def isAnyRef[A](implicit tag: ClassTag[A]): Boolean  = !tag.runtimeClass.isPrimitive
   }
 }
 
