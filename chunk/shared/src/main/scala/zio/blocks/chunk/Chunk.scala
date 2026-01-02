@@ -19,7 +19,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
     else {
       val newDepth = Math.max(self.depth, that.depth) + 1
       if (newDepth > Chunk.MaxDepthBeforeMaterialize) {
-        Chunk.fromArray(self.toArray[AnyRef](ClassTag.AnyRef)).concat(that).asInstanceOf[Chunk[A1]]
+        Chunk.fromArray(self.toArray(ClassTag.AnyRef).asInstanceOf[Array[AnyRef]]).concat(that).asInstanceOf[Chunk[A1]]
       } else {
         self.concat(that)
       }
@@ -206,9 +206,9 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
     builder.result()
   }
 
-  def zipAll[B](that: Chunk[B], selfDefault: A, thatDefault: B): Chunk[(A, B)] = {
+  def zipAll[A1 >: A, B](that: Chunk[B], selfDefault: A1, thatDefault: B): Chunk[(A1, B)] = {
     val len     = Math.max(self.length, that.length)
-    val builder = ChunkBuilder.make[(A, B)](len)
+    val builder = ChunkBuilder.make[(A1, B)](len)
     var i       = 0
     while (i < len) {
       val a = if (i < self.length) self(i) else selfDefault
@@ -322,7 +322,14 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   def asBase64String(implicit ev: A <:< Byte): String = {
-    java.util.Base64.getEncoder.encodeToString(this.toArray[Byte])
+    val arr  = new Array[Byte](length)
+    val iter = chunkIterator
+    var i    = 0
+    while (i < length) {
+      arr(i) = ev(iter.next())
+      i += 1
+    }
+    java.util.Base64.getEncoder.encodeToString(arr)
   }
 
   def toBinaryString(implicit ev: A <:< Byte): String = {
@@ -435,14 +442,14 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
     Chunk.fromArray(array)
   }
 
-  def sortBy[B](f: A => B)(implicit ord: Ordering[B], tag: ClassTag[A]): Chunk[A] = {
-    val array = toArray[A]
-    scala.util.Sorting.stableSort(array, (x: A, y: A) => ord.lt(f(x), f(y)))
+  def sortBy[A1 >: A, B](f: A1 => B)(implicit ord: Ordering[B], tag: ClassTag[A1]): Chunk[A1] = {
+    val array = toArray[A1]
+    scala.util.Sorting.stableSort(array, (x: A1, y: A1) => ord.lt(f(x), f(y)))
     Chunk.fromArray(array)
   }
 
-  def sortWith(lt: (A, A) => Boolean)(implicit tag: ClassTag[A]): Chunk[A] = {
-    val array = toArray[A]
+  def sortWith[A1 >: A](lt: (A1, A1) => Boolean)(implicit tag: ClassTag[A1]): Chunk[A1] = {
+    val array = toArray[A1]
     scala.util.Sorting.stableSort(array, lt)
     Chunk.fromArray(array)
   }
