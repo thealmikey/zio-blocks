@@ -45,14 +45,52 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
 
   def map[B: ClassTag](f: A => B): Chunk[B] = {
     val builder = ChunkBuilder.make[B](length)
-    foreach { a => builder.addOne(f(a)) }
+    val iter    = chunkIterator
+    while (iter.hasNext) {
+      builder.addOne(f(iter.next()))
+    }
     builder.result()
   }
 
+  def flatMap[B: ClassTag](f: A => Chunk[B]): Chunk[B] = {
+    val builder = ChunkBuilder.make[B]()
+    val iter    = chunkIterator
+    while (iter.hasNext) {
+      f(iter.next()).foreach(builder.addOne)
+    }
+    builder.result()
+  }
+
+  def collect[B: ClassTag](pf: PartialFunction[A, B]): Chunk[B] = {
+    val builder = ChunkBuilder.make[B]()
+    val iter    = chunkIterator
+    while (iter.hasNext) {
+      val a = iter.next()
+      if (pf.isDefinedAt(a)) builder.addOne(pf(a))
+    }
+    builder.result()
+  }
+
+  def collectWhile[B: ClassTag](pf: PartialFunction[A, B]): Chunk[B] = {
+    val builder = ChunkBuilder.make[B]()
+    val iter    = chunkIterator
+    var loop    = true
+    while (iter.hasNext && loop) {
+      val a = iter.next()
+      if (pf.isDefinedAt(a)) builder.addOne(pf(a))
+      else loop = false
+    }
+    builder.result()
+  }
+
+  def take(n: Int): Chunk[A] = slice(0, n)
+
+  def drop(n: Int): Chunk[A] = slice(n, length)
+
   def takeWhile(f: A => Boolean): Chunk[A] = {
     val builder = ChunkBuilder.make[A]()
-    val iter = chunkIterator
-    var loop = true
+    val iter    = chunkIterator
+    var loop    = true
     while (iter.hasNext && loop) {
       val a = iter.next()
       if (f(a)) builder.addOne(a) else loop = false
@@ -61,16 +99,153 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   def dropWhile(f: A => Boolean): Chunk[A] = {
-    val builder = ChunkBuilder.make[A]()
-    val iter = chunkIterator
+    val iter     = chunkIterator
     var dropping = true
+    var count    = 0
+    while (iter.hasNext && dropping) {
+      val a = iter.next()
+      if (f(a)) count += 1
+      else dropping = false
+    }
+    drop(count)
+  }
+
+  def splitAt(n: Int): (Chunk[A], Chunk[A]) = (take(n), drop(n))
+
+  def partition(f: A => Boolean): (Chunk[A], Chunk[A]) = {
+    val left  = ChunkBuilder.make[A]()
+    val right = ChunkBuilder.make[A]()
+    val iter  = chunkIterator
     while (iter.hasNext) {
       val a = iter.next()
-      if (dropping && f(a)) ()
-      else {
-        dropping = false
-        builder.addOne(a)
+      if (f(a)) left.addOne(a) else right.addOne(a)
+    }
+    (left.result(), right.result())
+  }
+
+  def partitionMap[B: ClassTag, C: ClassTag](f: A => Either[B, C]): (Chunk[B], Chunk[C]) = {
+    val left  = ChunkBuilder.make[B]()
+    val right = ChunkBuilder.make[C]()
+    val iter  = chunkIterator
+    while (iter.hasNext) {
+      f(iter.next()) match {
+        case Left(b)  => left.addOne(b)
+        case Right(c) => right.addOne(c)
       }
+    }
+    (left.result(), right.result())
+  }
+
+  def span(f: A => Boolean): (Chunk[A], Chunk[A]) = {
+    val iter  = chunkIterator
+    var count = 0
+    var loop  = true
+    while (iter.hasNext && loop) {
+      if (f(iter.next())) count += 1
+      else loop = false
+    }
+    splitAt(count)
+  }
+
+  def foldLeft[S](s: S)(f: (S, A) => S): S = {
+    var res  = s
+    val iter = chunkIterator
+    while (iter.hasNext) {
+      res = f(res, iter.next())
+    }
+    res
+  }
+
+  def foldRight[S](s: S)(f: (A, S) => S): S = {
+    var res = s
+    var i   = length - 1
+    while (i >= 0) {
+      res = f(self(i), res)
+      i -= 1
+    }
+    res
+  }
+
+  def foldWhile[S](s: S)(p: S => Boolean)(f: (S, A) => S): S = {
+    var res  = s
+    val iter = chunkIterator
+    while (iter.hasNext && p(res)) {
+      res = f(res, iter.next())
+    }
+    res
+  }
+
+  def mapAccum[S, B: ClassTag](s: S)(f: (S, A) => (S, B)): (S, Chunk[B]) = {
+    val builder = ChunkBuilder.make[B](length)
+    var res     = s
+    val iter    = chunkIterator
+    while (iter.hasNext) {
+      val tuple = f(res, iter.next())
+      res = tuple._1
+      builder.addOne(tuple._2)
+    }
+    (res, builder.result())
+  }
+
+  def zip[B](that: Chunk[B]): Chunk[(A, B)] =
+    zipWith(that)((_, _))
+
+  def zipWith[B, C: ClassTag](that: Chunk[B])(f: (A, B) => C): Chunk[C] = {
+    val len     = Math.min(self.length, that.length)
+    val builder = ChunkBuilder.make[C](len)
+    var i       = 0
+    while (i < len) {
+      builder.addOne(f(self(i), that(i)))
+      i += 1
+    }
+    builder.result()
+  }
+
+  def zipAll[B](that: Chunk[B], selfDefault: A, thatDefault: B): Chunk[(A, B)] = {
+    val len     = Math.max(self.length, that.length)
+    val builder = ChunkBuilder.make[(A, B)](len)
+    var i       = 0
+    while (i < len) {
+      val a = if (i < self.length) self(i) else selfDefault
+      val b = if (i < that.length) that(i) else thatDefault
+      builder.addOne((a, b))
+      i += 1
+    }
+    builder.result()
+  }
+
+  def zipWithIndex: Chunk[(A, Int)] = zipWithIndexFrom(0)
+
+  def zipWithIndexFrom(n: Int): Chunk[(A, Int)] = {
+    val builder = ChunkBuilder.make[(A, Int)](length)
+    val iter    = chunkIterator
+    var i       = n
+    while (iter.hasNext) {
+      builder.addOne((iter.next(), i))
+      i += 1
+    }
+    builder.result()
+  }
+
+  def grouped(n: Int): Chunk[Chunk[A]] = {
+    if (n <= 0) throw new IllegalArgumentException("n must be positive")
+    val builder = ChunkBuilder.make[Chunk[A]]()
+    var i       = 0
+    while (i < length) {
+      builder.addOne(slice(i, i + n))
+      i += n
+    }
+    builder.result()
+  }
+
+  def sliding(size: Int, step: Int = 1): Chunk[Chunk[A]] = {
+    if (size <= 0 || step <= 0) throw new IllegalArgumentException("size and step must be positive")
+    val builder = ChunkBuilder.make[Chunk[A]]()
+    var i       = 0
+    while (i < length) {
+      builder.addOne(slice(i, i + size))
+      if (i + size >= length) i = length
+      else i += step
     }
     builder.result()
   }
@@ -365,30 +540,27 @@ object Chunk {
       builder.result()
     }
     override def takeWhile(f: A => Boolean): Chunk[A] = {
-      val builder = ChunkBuilder.make[A]()
-      var i       = 0
-      var loop    = true
-      while (i < array.length && loop) {
-        val a = array(i).asInstanceOf[A]
-        if (f(a)) builder.addOne(a) else loop = false
+      var i = 0
+      while (i < array.length && f(array(i).asInstanceOf[A])) {
         i += 1
       }
-      builder.result()
+      take(i)
     }
     override def dropWhile(f: A => Boolean): Chunk[A] = {
-      val builder  = ChunkBuilder.make[A]()
-      var i        = 0
-      var dropping = true
-      while (i < array.length) {
-        val a = array(i).asInstanceOf[A]
-        if (dropping && f(a)) ()
-        else {
-          dropping = false
-          builder.addOne(a)
-        }
+      var i = 0
+      while (i < array.length && f(array(i).asInstanceOf[A])) {
         i += 1
       }
-      builder.result()
+      drop(i)
+    }
+    override def foldLeft[S](s: S)(f: (S, A) => S): S = {
+      var res = s
+      var i   = 0
+      while (i < array.length) {
+        res = f(res, array(i).asInstanceOf[A])
+        i += 1
+      }
+      res
     }
     override def toArray[B >: A: ClassTag]: Array[B] = {
       val target = new Array[B](length)
@@ -442,30 +614,27 @@ object Chunk {
       builder.result()
     }
     override def takeWhile(f: Byte => Boolean): Chunk[Byte] = {
-      val builder = new ByteChunkBuilder(length)
-      var i       = 0
-      var loop    = true
-      while (i < array.length && loop) {
-        val a = array(i)
-        if (f(a)) builder.addOne(a) else loop = false
+      var i = 0
+      while (i < array.length && f(array(i))) {
         i += 1
       }
-      builder.result()
+      take(i)
     }
     override def dropWhile(f: Byte => Boolean): Chunk[Byte] = {
-      val builder  = new ByteChunkBuilder(length)
-      var i        = 0
-      var dropping = true
-      while (i < array.length) {
-        val a = array(i)
-        if (dropping && f(a)) ()
-        else {
-          dropping = false
-          builder.addOne(a)
-        }
+      var i = 0
+      while (i < array.length && f(array(i))) {
         i += 1
       }
-      builder.result()
+      drop(i)
+    }
+    override def foldLeft[S](s: S)(f: (S, Byte) => S): S = {
+      var res = s
+      var i   = 0
+      while (i < array.length) {
+        res = f(res, array(i))
+        i += 1
+      }
+      res
     }
     override def toArray[B >: Byte: ClassTag]: Array[B] = {
       if (Tags.isByte[B]) array.asInstanceOf[Array[B]]
@@ -510,31 +679,28 @@ object Chunk {
       builder.result()
     }
     override def takeWhile(f: Char => Boolean): Chunk[Char] = {
-      val builder = new CharChunkBuilder(length)
-      var i       = 0
-      var loop    = true
-      while (i < array.length && loop) {
-        val a = array(i)
-        if (f(a)) builder.addOne(a) else loop = false
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      take(i)
     }
     override def dropWhile(f: Char => Boolean): Chunk[Char] = {
-      val builder  = new CharChunkBuilder(length)
-      var i        = 0
-      var dropping = true
-      while (i < array.length) {
-        val a = array(i)
-        if (dropping && f(a)) ()
-        else {
-          dropping = false
-          builder.addOne(a)
-        }
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      drop(i)
     }
+    override def foldLeft[S](s: S)(f: (S, Char) => S): S = {
+      var res = s
+      var i   = 0
+      while (i < array.length) { res = f(res, array(i)); i += 1 }
+      res
+    }
+    override def foldRight[S](s: S)(f: (Char, S) => S): S = {
+      var res = s
+      var i   = array.length - 1
+      while (i >= 0) { res = f(array(i), res); i -= 1 }
+      res
+    }
+
     override def toArray[B >: Char: ClassTag]: Array[B] = {
       if (Tags.isChar[B]) array.asInstanceOf[Array[B]]
       else {
@@ -578,30 +744,27 @@ object Chunk {
       builder.result()
     }
     override def takeWhile(f: Short => Boolean): Chunk[Short] = {
-      val builder = new ShortChunkBuilder(length)
-      var i       = 0
-      var loop    = true
-      while (i < array.length && loop) {
-        val a = array(i)
-        if (f(a)) builder.addOne(a) else loop = false
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      take(i)
     }
     override def dropWhile(f: Short => Boolean): Chunk[Short] = {
-      val builder  = new ShortChunkBuilder(length)
-      var i        = 0
-      var dropping = true
-      while (i < array.length) {
-        val a = array(i)
-        if (dropping && f(a)) ()
-        else {
-          dropping = false
-          builder.addOne(a)
-        }
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      drop(i)
+    }
+    override def foldLeft[S](s: S)(f: (S, Short) => S): S = {
+      var res = s
+      var i   = 0
+      while (i < array.length) { res = f(res, array(i)); i += 1 }
+      res
+    }
+
+    override def foldRight[S](s: S)(f: (Short, S) => S): S = {
+      var res = s
+      var i   = array.length - 1
+      while (i >= 0) { res = f(array(i), res); i -= 1 }
+      res
     }
     override def toArray[B >: Short: ClassTag]: Array[B] = {
       if (Tags.isShort[B]) array.asInstanceOf[Array[B]]
@@ -646,30 +809,27 @@ object Chunk {
       builder.result()
     }
     override def takeWhile(f: Int => Boolean): Chunk[Int] = {
-      val builder = new IntChunkBuilder(length)
-      var i       = 0
-      var loop    = true
-      while (i < array.length && loop) {
-        val a = array(i)
-        if (f(a)) builder.addOne(a) else loop = false
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      take(i)
     }
     override def dropWhile(f: Int => Boolean): Chunk[Int] = {
-      val builder  = new IntChunkBuilder(length)
-      var i        = 0
-      var dropping = true
-      while (i < array.length) {
-        val a = array(i)
-        if (dropping && f(a)) ()
-        else {
-          dropping = false
-          builder.addOne(a)
-        }
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      drop(i)
+    }
+    override def foldLeft[S](s: S)(f: (S, Int) => S): S = {
+      var res = s
+      var i   = 0
+      while (i < array.length) { res = f(res, array(i)); i += 1 }
+      res
+    }
+
+    override def foldRight[S](s: S)(f: (Int, S) => S): S = {
+      var res = s
+      var i   = array.length - 1
+      while (i >= 0) { res = f(array(i), res); i -= 1 }
+      res
     }
     override def toArray[B >: Int: ClassTag]: Array[B] = {
       if (Tags.isInt[B]) array.asInstanceOf[Array[B]]
@@ -714,30 +874,27 @@ object Chunk {
       builder.result()
     }
     override def takeWhile(f: Long => Boolean): Chunk[Long] = {
-      val builder = new LongChunkBuilder(length)
-      var i       = 0
-      var loop    = true
-      while (i < array.length && loop) {
-        val a = array(i)
-        if (f(a)) builder.addOne(a) else loop = false
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      take(i)
     }
     override def dropWhile(f: Long => Boolean): Chunk[Long] = {
-      val builder  = new LongChunkBuilder(length)
-      var i        = 0
-      var dropping = true
-      while (i < array.length) {
-        val a = array(i)
-        if (dropping && f(a)) ()
-        else {
-          dropping = false
-          builder.addOne(a)
-        }
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      drop(i)
+    }
+    override def foldLeft[S](s: S)(f: (S, Long) => S): S = {
+      var res = s
+      var i   = 0
+      while (i < array.length) { res = f(res, array(i)); i += 1 }
+      res
+    }
+
+    override def foldRight[S](s: S)(f: (Long, S) => S): S = {
+      var res = s
+      var i   = array.length - 1
+      while (i >= 0) { res = f(array(i), res); i -= 1 }
+      res
     }
     override def toArray[B >: Long: ClassTag]: Array[B] = {
       if (Tags.isLong[B]) array.asInstanceOf[Array[B]]
@@ -782,30 +939,27 @@ object Chunk {
       builder.result()
     }
     override def takeWhile(f: Float => Boolean): Chunk[Float] = {
-      val builder = new FloatChunkBuilder(length)
-      var i       = 0
-      var loop    = true
-      while (i < array.length && loop) {
-        val a = array(i)
-        if (f(a)) builder.addOne(a) else loop = false
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      take(i)
     }
     override def dropWhile(f: Float => Boolean): Chunk[Float] = {
-      val builder  = new FloatChunkBuilder(length)
-      var i        = 0
-      var dropping = true
-      while (i < array.length) {
-        val a = array(i)
-        if (dropping && f(a)) ()
-        else {
-          dropping = false
-          builder.addOne(a)
-        }
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      drop(i)
+    }
+    override def foldLeft[S](s: S)(f: (S, Float) => S): S = {
+      var res = s
+      var i   = 0
+      while (i < array.length) { res = f(res, array(i)); i += 1 }
+      res
+    }
+
+    override def foldRight[S](s: S)(f: (Float, S) => S): S = {
+      var res = s
+      var i   = array.length - 1
+      while (i >= 0) { res = f(array(i), res); i -= 1 }
+      res
     }
     override def toArray[B >: Float: ClassTag]: Array[B] = {
       if (Tags.isFloat[B]) array.asInstanceOf[Array[B]]
@@ -850,30 +1004,27 @@ object Chunk {
       builder.result()
     }
     override def takeWhile(f: Double => Boolean): Chunk[Double] = {
-      val builder = new DoubleChunkBuilder(length)
-      var i       = 0
-      var loop    = true
-      while (i < array.length && loop) {
-        val a = array(i)
-        if (f(a)) builder.addOne(a) else loop = false
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      take(i)
     }
     override def dropWhile(f: Double => Boolean): Chunk[Double] = {
-      val builder  = new DoubleChunkBuilder(length)
-      var i        = 0
-      var dropping = true
-      while (i < array.length) {
-        val a = array(i)
-        if (dropping && f(a)) ()
-        else {
-          dropping = false
-          builder.addOne(a)
-        }
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      drop(i)
+    }
+    override def foldLeft[S](s: S)(f: (S, Double) => S): S = {
+      var res = s
+      var i   = 0
+      while (i < array.length) { res = f(res, array(i)); i += 1 }
+      res
+    }
+
+    override def foldRight[S](s: S)(f: (Double, S) => S): S = {
+      var res = s
+      var i   = array.length - 1
+      while (i >= 0) { res = f(array(i), res); i -= 1 }
+      res
     }
     override def toArray[B >: Double: ClassTag]: Array[B] = {
       if (Tags.isDouble[B]) array.asInstanceOf[Array[B]]
@@ -918,30 +1069,27 @@ object Chunk {
       builder.result()
     }
     override def takeWhile(f: Boolean => Boolean): Chunk[Boolean] = {
-      val builder = new BooleanChunkBuilder(length)
-      var i       = 0
-      var loop    = true
-      while (i < array.length && loop) {
-        val a = array(i)
-        if (f(a)) builder.addOne(a) else loop = false
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      take(i)
     }
     override def dropWhile(f: Boolean => Boolean): Chunk[Boolean] = {
-      val builder  = new BooleanChunkBuilder(length)
-      var i        = 0
-      var dropping = true
-      while (i < array.length) {
-        val a = array(i)
-        if (dropping && f(a)) ()
-        else {
-          dropping = false
-          builder.addOne(a)
-        }
-        i += 1
-      }
-      builder.result()
+      var i = 0
+      while (i < array.length && f(array(i))) { i += 1 }
+      drop(i)
+    }
+    override def foldLeft[S](s: S)(f: (S, Boolean) => S): S = {
+      var res = s
+      var i   = 0
+      while (i < array.length) { res = f(res, array(i)); i += 1 }
+      res
+    }
+
+    override def foldRight[S](s: S)(f: (Boolean, S) => S): S = {
+      var res = s
+      var i   = array.length - 1
+      while (i >= 0) { res = f(array(i), res); i -= 1 }
+      res
     }
     override def toArray[B >: Boolean: ClassTag]: Array[B] = {
       if (Tags.isBoolean[B]) array.asInstanceOf[Array[B]]
