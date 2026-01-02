@@ -19,7 +19,14 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
     else {
       val newDepth = Math.max(self.depth, that.depth) + 1
       if (newDepth > Chunk.MaxDepthBeforeMaterialize) {
-        Chunk.fromArray(self.toArray(ClassTag.AnyRef).asInstanceOf[Array[AnyRef]]).concat(that).asInstanceOf[Chunk[A1]]
+        val arr  = new Array[AnyRef](self.length)
+        val iter = self.chunkIterator
+        var i    = 0
+        while (iter.hasNext) {
+          arr(i) = iter.next().asInstanceOf[AnyRef]
+          i += 1
+        }
+        Chunk.fromArray(arr).concat(that).asInstanceOf[Chunk[A1]]
       } else {
         self.concat(that)
       }
@@ -426,13 +433,15 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   def reverse: Chunk[A] = {
     if (length <= 1) self
     else {
-      val builder = ChunkBuilder.make[AnyRef](length)
-      var i       = length - 1
+      val arr = new Array[AnyRef](length)
+      var i   = length - 1
+      var j   = 0
       while (i >= 0) {
-        builder.addOne(self(i).asInstanceOf[AnyRef])
+        arr(j) = self(i).asInstanceOf[AnyRef]
         i -= 1
+        j += 1
       }
-      builder.result().asInstanceOf[Chunk[A]]
+      Chunk.fromArray(arr)(ClassTag.AnyRef).asInstanceOf[Chunk[A]]
     }
   }
 
