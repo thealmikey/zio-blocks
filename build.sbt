@@ -111,6 +111,7 @@ lazy val chunk = crossProject(JSPlatform, JVMPlatform, NativePlatform)
   .settings(crossProjectSettings)
   .settings(buildInfoSettings("zio.blocks.chunk"))
   .enablePlugins(BuildInfoPlugin)
+  .jvmSettings(mimaSettings(failOnProblem = false))
   .jsSettings(jsSettings)
   .nativeSettings(nativeSettings)
   .settings(
