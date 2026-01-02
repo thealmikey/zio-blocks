@@ -39,7 +39,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   def filter(f: A => Boolean): Chunk[A] = {
-    val builder = ChunkBuilder.make[AnyRef]()
+    val builder = ChunkBuilder.make[AnyRef](length)
     val iter    = chunkIterator
     while (iter.hasNext) {
       val a = iter.next()
@@ -58,7 +58,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   def flatMap[B: ClassTag](f: A => Chunk[B]): Chunk[B] = {
-    val builder = ChunkBuilder.make[B]()
+    val builder = ChunkBuilder.make[B](length)
     val iter    = chunkIterator
     while (iter.hasNext) {
       f(iter.next()).foreach(builder.addOne)
@@ -67,7 +67,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   def collect[B: ClassTag](pf: PartialFunction[A, B]): Chunk[B] = {
-    val builder = ChunkBuilder.make[B]()
+    val builder = ChunkBuilder.make[B](length)
     val iter    = chunkIterator
     while (iter.hasNext) {
       val a = iter.next()
@@ -77,7 +77,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   def collectWhile[B: ClassTag](pf: PartialFunction[A, B]): Chunk[B] = {
-    val builder = ChunkBuilder.make[B]()
+    val builder = ChunkBuilder.make[B](length)
     val iter    = chunkIterator
     var loop    = true
     while (iter.hasNext && loop) {
@@ -93,7 +93,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   def drop(n: Int): Chunk[A] = slice(n, length)
 
   def takeWhile(f: A => Boolean): Chunk[A] = {
-    val builder = ChunkBuilder.make[AnyRef]()
+    val builder = ChunkBuilder.make[AnyRef](length)
     val iter    = chunkIterator
     var loop    = true
     while (iter.hasNext && loop) {
@@ -118,8 +118,8 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   def splitAt(n: Int): (Chunk[A], Chunk[A]) = (take(n), drop(n))
 
   def partition(f: A => Boolean): (Chunk[A], Chunk[A]) = {
-    val left  = ChunkBuilder.make[AnyRef]()
-    val right = ChunkBuilder.make[AnyRef]()
+    val left  = ChunkBuilder.make[AnyRef](length / 2)
+    val right = ChunkBuilder.make[AnyRef](length / 2)
     val iter  = chunkIterator
     while (iter.hasNext) {
       val a = iter.next()
@@ -129,8 +129,8 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   def partitionMap[B: ClassTag, C: ClassTag](f: A => Either[B, C]): (Chunk[B], Chunk[C]) = {
-    val left  = ChunkBuilder.make[B]()
-    val right = ChunkBuilder.make[C]()
+    val left  = ChunkBuilder.make[B](length / 2)
+    val right = ChunkBuilder.make[C](length / 2)
     val iter  = chunkIterator
     while (iter.hasNext) {
       f(iter.next()) match {
@@ -234,7 +234,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
 
   def grouped(n: Int): Chunk[Chunk[A]] = {
     if (n <= 0) throw new IllegalArgumentException("n must be positive")
-    val builder = ChunkBuilder.make[Chunk[A]]()
+    val builder = ChunkBuilder.make[Chunk[A]](length / n + 1)
     var i       = 0
     while (i < length) {
       builder.addOne(slice(i, i + n))
@@ -245,7 +245,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
 
   def sliding(size: Int, step: Int = 1): Chunk[Chunk[A]] = {
     if (size <= 0 || step <= 0) throw new IllegalArgumentException("size and step must be positive")
-    val builder = ChunkBuilder.make[Chunk[A]]()
+    val builder = ChunkBuilder.make[Chunk[A]](length / step + 1)
     var i       = 0
     while (i < length) {
       builder.addOne(slice(i, i + size))
@@ -455,7 +455,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   def dedupe: Chunk[A] = {
     if (isEmpty) self
     else {
-      val builder = ChunkBuilder.make[AnyRef]()
+      val builder = ChunkBuilder.make[AnyRef](length)
       var last: Option[A] = None
       foreach { a =>
         if (last.isEmpty || last.get != a) {
@@ -557,7 +557,7 @@ object Chunk {
   def fromIterator[A: ClassTag](it: Iterator[A]): Chunk[A] = {
     if (!it.hasNext) empty
     else {
-      val builder = ChunkBuilder.make[A]()
+      val builder = ChunkBuilder.make[A](BufferSize)
       while (it.hasNext) builder.addOne(it.next())
       builder.result()
     }
@@ -834,14 +834,14 @@ object Chunk {
       }
     }
     override def filter(f: A => Boolean): Chunk[A] = {
-      val builder = ChunkBuilder.make[A]()
+      val builder = ChunkBuilder.make[AnyRef](length)
       var i       = 0
       while (i < array.length) {
         val a = array(i).asInstanceOf[A]
         if (f(a)) builder.addOne(a)
         i += 1
       }
-      builder.result()
+      builder.result().asInstanceOf[Chunk[A]]
     }
     override def map[B: ClassTag](f: A => B): Chunk[B] = {
       val builder = ChunkBuilder.make[B](length)
@@ -908,7 +908,7 @@ object Chunk {
       while (i < array.length) { f(array(i)); i += 1 }
     }
     override def filter(f: Byte => Boolean): Chunk[Byte] = {
-      val builder = new ByteChunkBuilder(length)
+      val builder = new ChunkBuilder.ByteChunkBuilder(length)
       var i       = 0
       while (i < array.length) {
         val a = array(i)
@@ -973,7 +973,7 @@ object Chunk {
       while (i < array.length) { f(array(i)); i += 1 }
     }
     override def filter(f: Char => Boolean): Chunk[Char] = {
-      val builder = new CharChunkBuilder(length)
+      val builder = new ChunkBuilder.CharChunkBuilder(length)
       var i       = 0
       while (i < array.length) {
         val a = array(i)
@@ -1038,7 +1038,7 @@ object Chunk {
       while (i < array.length) { f(array(i)); i += 1 }
     }
     override def filter(f: Short => Boolean): Chunk[Short] = {
-      val builder = new ShortChunkBuilder(length)
+      val builder = new ChunkBuilder.ShortChunkBuilder(length)
       var i       = 0
       while (i < array.length) {
         val a = array(i)
@@ -1103,7 +1103,7 @@ object Chunk {
       while (i < array.length) { f(array(i)); i += 1 }
     }
     override def filter(f: Int => Boolean): Chunk[Int] = {
-      val builder = new IntChunkBuilder(length)
+      val builder = new ChunkBuilder.IntChunkBuilder(length)
       var i       = 0
       while (i < array.length) {
         val a = array(i)
@@ -1168,7 +1168,7 @@ object Chunk {
       while (i < array.length) { f(array(i)); i += 1 }
     }
     override def filter(f: Long => Boolean): Chunk[Long] = {
-      val builder = new LongChunkBuilder(length)
+      val builder = new ChunkBuilder.LongChunkBuilder(length)
       var i       = 0
       while (i < array.length) {
         val a = array(i)
@@ -1233,7 +1233,7 @@ object Chunk {
       while (i < array.length) { f(array(i)); i += 1 }
     }
     override def filter(f: Float => Boolean): Chunk[Float] = {
-      val builder = new FloatChunkBuilder(length)
+      val builder = new ChunkBuilder.FloatChunkBuilder(length)
       var i       = 0
       while (i < array.length) {
         val a = array(i)
@@ -1298,7 +1298,7 @@ object Chunk {
       while (i < array.length) { f(array(i)); i += 1 }
     }
     override def filter(f: Double => Boolean): Chunk[Double] = {
-      val builder = new DoubleChunkBuilder(length)
+      val builder = new ChunkBuilder.DoubleChunkBuilder(length)
       var i       = 0
       while (i < array.length) {
         val a = array(i)
@@ -1363,7 +1363,7 @@ object Chunk {
       while (i < array.length) { f(array(i)); i += 1 }
     }
     override def filter(f: Boolean => Boolean): Chunk[Boolean] = {
-      val builder = new BooleanChunkBuilder(length)
+      val builder = new ChunkBuilder.BooleanChunkBuilder(length)
       var i       = 0
       while (i < array.length) {
         val a = array(i)
@@ -1490,7 +1490,7 @@ object Chunk {
         new ChunkPackedBoolean(Chunk.fromArray(resWords.asInstanceOf[Array[AnyRef]])(ClassTag.AnyRef).asInstanceOf[Chunk[t1]], minLen, l.bitWidth)(l.tag, l.ops)
       case _ =>
         val len = Math.min(left.length, right.length)
-        val builder = new BooleanChunkBuilder(len)
+        val builder = new ChunkBuilder.BooleanChunkBuilder(len)
         var i = 0
         while (i < len) {
           val lv = left(i)
