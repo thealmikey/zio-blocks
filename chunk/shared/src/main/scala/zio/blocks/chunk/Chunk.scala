@@ -285,6 +285,37 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
     }
     array
   }
+
+  def asBitsByte(implicit ev: A <:< Boolean): Chunk[Boolean] =
+    Chunk.asPacked[Byte](self.asInstanceOf[Chunk[Boolean]], 8)
+  def asBitsInt(implicit ev: A <:< Boolean): Chunk[Boolean] =
+    Chunk.asPacked[Int](self.asInstanceOf[Chunk[Boolean]], 32)
+  def asBitsLong(implicit ev: A <:< Boolean): Chunk[Boolean] =
+    Chunk.asPacked[Long](self.asInstanceOf[Chunk[Boolean]], 64)
+
+  def toPackedByte(implicit ev: A <:< Boolean): Chunk[Byte] =
+    Chunk.pack[Byte](self.asInstanceOf[Chunk[Boolean]], 8)
+  def toPackedInt(implicit ev: A <:< Boolean): Chunk[Int] =
+    Chunk.pack[Int](self.asInstanceOf[Chunk[Boolean]], 32)
+  def toPackedLong(implicit ev: A <:< Boolean): Chunk[Long] =
+    Chunk.pack[Long](self.asInstanceOf[Chunk[Boolean]], 64)
+
+  def &(that: Chunk[Boolean])(implicit ev: A <:< Boolean): Chunk[Boolean] =
+    Chunk.bitwise(self.asInstanceOf[Chunk[Boolean]], that, 0)
+
+  def |(that: Chunk[Boolean])(implicit ev: A <:< Boolean): Chunk[Boolean] =
+    Chunk.bitwise(self.asInstanceOf[Chunk[Boolean]], that, 1)
+
+  def ^(that: Chunk[Boolean])(implicit ev: A <:< Boolean): Chunk[Boolean] =
+    Chunk.bitwise(self.asInstanceOf[Chunk[Boolean]], that, 2)
+
+  def negate(implicit ev: A <:< Boolean): Chunk[Boolean] =
+    self.asInstanceOf[Chunk[Boolean]] match {
+      case packed: Chunk.ChunkPackedBoolean[t] =>
+        import packed.ops
+        new Chunk.ChunkPackedBoolean[t](packed.chunk.map(w => ops.not(w))(packed.tag), packed.length, packed.bitWidth)(packed.tag, ops)
+      case other => other.map(!_)
+    }
 }
 
 object Chunk {
@@ -1117,6 +1148,165 @@ object Chunk {
     def isBoolean[A](implicit tag: ClassTag[A]): Boolean = tag == ClassTag.Boolean
     def isChar[A](implicit tag: ClassTag[A]): Boolean    = tag == ClassTag.Char
     def isAnyRef[A](implicit tag: ClassTag[A]): Boolean  = !tag.runtimeClass.isPrimitive
+  }
+
+  private[chunk] def asPacked[T: ClassTag: BitOps](chunk: Chunk[Boolean], bitWidth: Int): Chunk[Boolean] =
+    chunk match {
+      case p: ChunkPackedBoolean[T] if p.bitWidth == bitWidth => p
+      case _ => new ChunkPackedBoolean[T](pack[T](chunk, bitWidth), chunk.length, bitWidth)
+    }
+
+  private[chunk] def pack[T: ClassTag: BitOps](chunk: Chunk[Boolean], bitWidth: Int): Chunk[T] = {
+    chunk match {
+      case packed: ChunkPackedBoolean[T] if packed.bitWidth == bitWidth =>
+        packed.chunk.asInstanceOf[Chunk[T]]
+      case _ =>
+        val ops     = implicitly[BitOps[T]]
+        val len     = (chunk.length + bitWidth - 1) / bitWidth
+        val array   = new Array[T](len)
+        var i       = 0
+        while (i < len) {
+          var word = ops.zero
+          var bit  = 0
+          while (bit < bitWidth && (i * bitWidth + bit) < chunk.length) {
+            if (chunk(i * bitWidth + bit)) {
+              word = ops.or(word, ops.shl(ops.one, bit))
+            }
+            bit += 1
+          }
+          array(i) = word
+          i += 1
+        }
+        fromArray(array)
+    }
+  }
+
+  private[chunk] def bitwise(
+    left: Chunk[Boolean],
+    right: Chunk[Boolean],
+    opType: Int // 0: AND, 1: OR, 2: XOR
+  ): Chunk[Boolean] = {
+    (left, right) match {
+      case (l: ChunkPackedBoolean[t1], r: ChunkPackedBoolean[t2]) if l.bitWidth == r.bitWidth && l.bitWidth > 1 =>
+        val ops = l.ops.asInstanceOf[BitOps[Any]]
+        val minLen = Math.min(l.length, r.length)
+        val wordLen = (minLen + l.bitWidth - 1) / l.bitWidth
+        val leftWords = l.chunk.asInstanceOf[Chunk[Any]]
+        val rightWords = r.chunk.asInstanceOf[Chunk[Any]]
+        val resWords = new Array[Any](wordLen)(l.tag.asInstanceOf[ClassTag[Any]])
+        var i = 0
+        while (i < wordLen) {
+          val lw = leftWords(i)
+          val rw = rightWords(i)
+          resWords(i) = opType match {
+            case 0 => ops.and(lw, rw)
+            case 1 => ops.or(lw, rw)
+            case _ => ops.xor(lw, rw)
+          }
+          i += 1
+        }
+        new ChunkPackedBoolean(fromArray(resWords), minLen, l.bitWidth)(l.tag, l.ops)
+      case _ =>
+        val len = Math.min(left.length, right.length)
+        val builder = new BooleanChunkBuilder(len)
+        var i = 0
+        while (i < len) {
+          val lv = left(i)
+          val rv = right(i)
+          val res = opType match {
+            case 0 => lv & rv
+            case 1 => lv | rv
+            case _ => lv ^ rv
+          }
+          builder.addOne(res)
+          i += 1
+        }
+        builder.result()
+    }
+  }
+
+  private[chunk] final class ChunkPackedBoolean[T](
+    private[chunk] val chunk: Chunk[T],
+    val length: Int,
+    private[chunk] val bitWidth: Int
+  )(implicit private[chunk] val tag: ClassTag[T], private[chunk] val ops: BitOps[T])
+      extends Chunk[Boolean] {
+    def apply(index: Int): Boolean = {
+      if (index < 0 || index >= length) throw new IndexOutOfBoundsException(index.toString)
+      val word  = chunk(index / bitWidth)
+      val bit   = index % bitWidth
+      ops.and(word, ops.shl(ops.one, bit)) != ops.zero
+    }
+
+    def chunkIterator: ChunkIterator[Boolean] = new ChunkIterator[Boolean] {
+      private[this] var i = 0
+      def hasNext: Boolean = i < length
+      def next(): Boolean = {
+        val b = apply(i)
+        i += 1
+        b
+      }
+    }
+  }
+
+  private[chunk] trait BitOps[T] {
+    def zero: T
+    def one: T
+    def and(a: T, b: T): T
+    def or(a: T, b: T): T
+    def xor(a: T, b: T): T
+    def not(a: T): T
+    def shl(a: T, bits: Int): T
+  }
+
+  private[chunk] object BitOps {
+    implicit val byteOps: BitOps[Byte] = new BitOps[Byte] {
+      def zero: Byte                   = 0
+      def one: Byte                    = 1
+      def and(a: Byte, b: Byte): Byte  = (a & b).toByte
+      def or(a: Byte, b: Byte): Byte   = (a | b).toByte
+      def xor(a: Byte, b: Byte): Byte  = (a ^ b).toByte
+      def not(a: Byte): Byte           = (~a).toByte
+      def shl(a: Byte, bits: Int): Byte = (a << bits).toByte
+    }
+    implicit val intOps: BitOps[Int] = new BitOps[Int] {
+      def zero: Int                  = 0
+      def one: Int                   = 1
+      def and(a: Int, b: Int): Int   = a & b
+      def or(a: Int, b: Int): Int    = a | b
+      def xor(a: Int, b: Int): Int   = a ^ b
+      def not(a: Int): Int           = ~a
+      def shl(a: Int, bits: Int): Int = a << bits
+    }
+    implicit val longOps: BitOps[Long] = new BitOps[Long] {
+      def zero: Long                   = 0L
+      def one: Long                    = 1L
+      def and(a: Long, b: Long): Long  = a & b
+      def or(a: Long, b: Long): Long   = a | b
+      def xor(a: Long, b: Long): Long  = a ^ b
+      def not(a: Long): Long           = ~a
+      def shl(a: Long, bits: Int): Long = a << bits
+    }
+  }
+
+  private[chunk] abstract class BitChunk[T] extends Chunk[T]
+
+  private[chunk] final class BitChunkByte(val array: Array[Byte]) extends BitChunk[Byte] {
+    def length: Int               = array.length
+    def apply(index: Int): Byte   = array(index)
+    def chunkIterator: ChunkIterator[Byte] = (new ByteArray(array)).chunkIterator
+  }
+
+  private[chunk] final class BitChunkInt(val array: Array[Int]) extends BitChunk[Int] {
+    def length: Int              = array.length
+    def apply(index: Int): Int   = array(index)
+    def chunkIterator: ChunkIterator[Int] = (new IntArray(array)).chunkIterator
+  }
+
+  private[chunk] final class BitChunkLong(val array: Array[Long]) extends BitChunk[Long] {
+    def length: Int               = array.length
+    def apply(index: Int): Long   = array(index)
+    def chunkIterator: ChunkIterator[Long] = (new LongArray(array)).chunkIterator
   }
 }
 
