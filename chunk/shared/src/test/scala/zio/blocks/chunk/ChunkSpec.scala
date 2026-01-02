@@ -61,14 +61,14 @@ object ChunkSpec extends ZIOSpecDefault {
         assertTrue(className.contains(expectedClass))
       }
 
-      check(Array[Byte](1), "ByteArray") &&
-      check(Array[Short](1), "ShortArray") &&
-      check(Array[Int](1), "IntArray") &&
-      check(Array[Long](1), "LongArray") &&
-      check(Array[Float](1.0f), "FloatArray") &&
-      check(Array[Double](1.0), "DoubleArray") &&
-      check(Array[Boolean](true), "BooleanArray") &&
-      check(Array[Char]('a'), "CharArray")
+      check(Array[Byte](1, 2), "ByteArray") &&
+      check(Array[Short](1, 2), "ShortArray") &&
+      check(Array[Int](1, 2), "IntArray") &&
+      check(Array[Long](1L, 2L), "LongArray") &&
+      check(Array[Float](1.0f, 2.0f), "FloatArray") &&
+      check(Array[Double](1.0, 2.0), "DoubleArray") &&
+      check(Array[Boolean](true, false), "BooleanArray") &&
+      check(Array[Char]('a', 'b'), "CharArray")
     },
     test("reference types use Arr") {
       val chunk = Chunk.fromArray(Array("a", "b"))
