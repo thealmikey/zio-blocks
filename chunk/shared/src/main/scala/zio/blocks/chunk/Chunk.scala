@@ -838,7 +838,7 @@ object Chunk {
       var i       = 0
       while (i < array.length) {
         val a = array(i).asInstanceOf[A]
-        if (f(a)) builder.addOne(a)
+        if (f(a)) builder.addOne(a.asInstanceOf[AnyRef])
         i += 1
       }
       builder.result().asInstanceOf[Chunk[A]]
