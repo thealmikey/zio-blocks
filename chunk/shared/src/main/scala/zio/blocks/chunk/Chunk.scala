@@ -1493,12 +1493,13 @@ object Chunk {
 
     (ul, ur) match {
       case (l: ChunkPackedBoolean[t1], r: ChunkPackedBoolean[t2]) if l.bitWidth == r.bitWidth =>
-        val ops        = l.ops.asInstanceOf[BitOps[Any]]
+        val ops        = l.ops.asInstanceOf[BitOps[t1]]
         val minLen     = Math.min(l.length, r.length)
         val wordLen    = (minLen + l.bitWidth - 1) / l.bitWidth
-        val leftWords  = l.chunk.asInstanceOf[Chunk[Any]]
-        val rightWords = r.chunk.asInstanceOf[Chunk[Any]]
-        val resWords   = l.tag.asInstanceOf[ClassTag[Any]].newArray(wordLen)
+        val tag        = l.tag
+        val leftWords  = l.chunk.asInstanceOf[Chunk[t1]]
+        val rightWords = r.chunk.asInstanceOf[Chunk[t1]]
+        val resWords   = tag.newArray(wordLen)
         var i          = 0
         while (i < wordLen) {
           val lw = leftWords(i)
@@ -1508,14 +1509,14 @@ object Chunk {
             case 1 => ops.or(lw, rw)
             case _ => ops.xor(lw, rw)
           }
-          java.lang.reflect.Array.set(resWords, i, result)
+          resWords(i) = result
           i += 1
         }
-        new ChunkPackedBoolean(
-          fromArray(resWords)(l.tag.asInstanceOf[ClassTag[Any]]).asInstanceOf[Chunk[t1]],
+        new ChunkPackedBoolean[t1](
+          fromArray(resWords)(tag),
           minLen,
           l.bitWidth
-        )(l.tag, l.ops)
+        )(tag, ops)
       case _ =>
         val len     = Math.min(left.length, right.length)
         val builder = new ChunkBuilder.BooleanChunkBuilder(len)
