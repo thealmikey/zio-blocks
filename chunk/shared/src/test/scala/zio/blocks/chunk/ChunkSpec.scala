@@ -14,6 +14,7 @@ object ChunkSpec extends ZIOSpecDefault {
     bitwiseSuite,
     stringEncodingSuite,
     chunkBuilderSuite,
+    bitChunkOperationsSuite,
     threadSafetySuite,
     edgeCasesSuite
   )
@@ -285,6 +286,65 @@ object ChunkSpec extends ZIOSpecDefault {
         bits.toPackedByte.length == 8,
         bits.toPackedInt.length == 2,
         bits.toPackedLong.length == 1
+      )
+    }
+  )
+
+  private val bitChunkOperationsSuite = suite("Bit-Packed Boolean Operations")(
+    test("asBits roundtrip preserves values") {
+      val data = List(true, false, true, true, false, false, true, true, true, false)
+      val chunk = Chunk.fromIterable(data)
+      
+      val fromByte = chunk.asBitsByte
+      val fromInt  = chunk.asBitsInt
+      val fromLong = chunk.asBitsLong
+
+      assertTrue(
+        fromByte.toList == data,
+        fromInt.toList == data,
+        fromLong.toList == data
+      )
+    },
+    test("toPacked produces correctly-sized arrays") {
+      val bits64 = Chunk.fill(64)(true)
+      val bits65 = Chunk.fill(65)(true)
+
+      assertTrue(
+        bits64.toPackedByte.length == 8,
+        bits64.toPackedInt.length == 2,
+        bits64.toPackedLong.length == 1,
+        bits65.toPackedByte.length == 9,
+        bits65.toPackedInt.length == 3,
+        bits65.toPackedLong.length == 2
+      )
+    },
+    test("slice/take/drop on packed chunks") {
+      val data = List(false, true, false, true, true, true, false, false, true)
+      val packed = Chunk.fromIterable(data).asBitsLong
+      
+      assertTrue(
+        packed.take(4).toList == data.take(4),
+        packed.drop(4).toList == data.drop(4),
+        packed.slice(2, 6).toList == data.slice(2, 6)
+      )
+    },
+    test("bitwise operations on packed vs unpacked") {
+      val lData = List(true, true, false, false)
+      val rData = List(true, false, true, false)
+      
+      val unpackedL = Chunk.fromIterable(lData)
+      val unpackedR = Chunk.fromIterable(rData)
+      
+      val packedL = unpackedL.asBitsLong
+      val packedR = unpackedR.asBitsLong
+
+      assertTrue(
+        (packedL & packedR).toList == List(true, false, false, false),
+        (packedL | packedR).toList == List(true, true, true, false),
+        (packedL ^ packedR).toList == List(false, true, true, false),
+        packedL.negate.toList == List(false, false, true, true),
+        // Mixed packed/unpacked
+        (packedL & unpackedR).toList == List(true, false, false, false)
       )
     }
   )

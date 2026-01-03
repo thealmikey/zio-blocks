@@ -539,13 +539,18 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   def ^(that: Chunk[Boolean])(implicit ev: A <:< Boolean): Chunk[Boolean] =
     Chunk.bitwise(self.asInstanceOf[Chunk[Boolean]], that, 2)
 
-  def negate(implicit ev: A <:< Boolean): Chunk[Boolean] =
-    self.asInstanceOf[Chunk[Boolean]] match {
+  def negate(implicit ev: A <:< Boolean): Chunk[Boolean] = {
+    def loop(c: Chunk[Boolean]): Chunk[Boolean] = c match {
       case packed: Chunk.ChunkPackedBoolean[t] =>
         import packed.ops
-        new Chunk.ChunkPackedBoolean[t](packed.chunk.map(w => ops.not(w))(packed.tag), packed.length, packed.bitWidth)(packed.tag, ops)
+        val tag = packed.tag
+        new Chunk.ChunkPackedBoolean[t](packed.chunk.map(w => ops.not(w))(tag), packed.length, packed.bitWidth)(tag, ops)
+      case Chunk.Slice(inner: Chunk[Boolean] @unchecked, off, len) =>
+        loop(inner).slice(off, len)
       case other => other.map(!_)
     }
+    loop(self.asInstanceOf[Chunk[Boolean]])
+  }
 }
 
 object Chunk {
@@ -1484,15 +1489,23 @@ object Chunk {
     right: Chunk[Boolean],
     opType: Int // 0: AND, 1: OR, 2: XOR
   ): Chunk[Boolean] = {
-    (left, right) match {
-      case (l: ChunkPackedBoolean[t1], r: ChunkPackedBoolean[t2]) if l.bitWidth == r.bitWidth && l.bitWidth > 1 =>
-        val ops = l.ops.asInstanceOf[BitOps[Any]]
-        val minLen = Math.min(l.length, r.length)
-        val wordLen = (minLen + l.bitWidth - 1) / l.bitWidth
-        val leftWords = l.chunk.asInstanceOf[Chunk[Any]]
+    def unwrap(c: Chunk[Boolean]): Chunk[Boolean] = c match {
+      case Slice(inner: Chunk[Boolean] @unchecked, off, len) if off == 0 && len == inner.length => unwrap(inner)
+      case _ => c
+    }
+
+    val ul = unwrap(left)
+    val ur = unwrap(right)
+
+    (ul, ur) match {
+      case (l: ChunkPackedBoolean[t1], r: ChunkPackedBoolean[t2]) if l.bitWidth == r.bitWidth =>
+        val ops        = l.ops.asInstanceOf[BitOps[Any]]
+        val minLen     = Math.min(l.length, r.length)
+        val wordLen    = (minLen + l.bitWidth - 1) / l.bitWidth
+        val leftWords  = l.chunk.asInstanceOf[Chunk[Any]]
         val rightWords = r.chunk.asInstanceOf[Chunk[Any]]
-        val resWords = l.tag.asInstanceOf[ClassTag[Any]].newArray(wordLen)
-        var i = 0
+        val resWords   = l.tag.asInstanceOf[ClassTag[Any]].newArray(wordLen)
+        var i          = 0
         while (i < wordLen) {
           val lw = leftWords(i)
           val rw = rightWords(i)
@@ -1503,11 +1516,15 @@ object Chunk {
           }).asInstanceOf[AnyRef]
           i += 1
         }
-        new ChunkPackedBoolean(Chunk.fromArray(resWords.asInstanceOf[Array[AnyRef]])(ClassTag.AnyRef).asInstanceOf[Chunk[t1]], minLen, l.bitWidth)(l.tag, l.ops)
+        new ChunkPackedBoolean(
+          fromArray(resWords)(l.tag.asInstanceOf[ClassTag[Any]]).asInstanceOf[Chunk[t1]],
+          minLen,
+          l.bitWidth
+        )(l.tag, l.ops)
       case _ =>
-        val len = Math.min(left.length, right.length)
+        val len     = Math.min(left.length, right.length)
         val builder = new ChunkBuilder.BooleanChunkBuilder(len)
-        var i = 0
+        var i       = 0
         while (i < len) {
           val lv = left(i)
           val rv = right(i)
