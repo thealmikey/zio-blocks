@@ -1503,11 +1503,12 @@ object Chunk {
         while (i < wordLen) {
           val lw = leftWords(i)
           val rw = rightWords(i)
-          resWords(i) = (opType match {
+          val result = opType match {
             case 0 => ops.and(lw, rw)
             case 1 => ops.or(lw, rw)
             case _ => ops.xor(lw, rw)
-          }).asInstanceOf[AnyRef]
+          }
+          java.lang.reflect.Array.set(resWords, i, result)
           i += 1
         }
         new ChunkPackedBoolean(
