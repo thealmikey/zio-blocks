@@ -18,15 +18,8 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
       val fiberCount = 100
       val chunk      = Chunk.fromArray((1 to size).toArray)
 
-      // Checksum function: simple sum using project-style while loop on iterator
-      def computeChecksum(c: Chunk[Int]): Int = {
-        var sum  = 0
-        val iter = c.chunkIterator
-        while (iter.hasNext) {
-          sum += iter.next()
-        }
-        sum
-      }
+      // Checksum function: simple sum using foldLeft
+      def computeChecksum(c: Chunk[Int]): Int = c.foldLeft(0)(_ + _)
 
       val expectedChecksum = computeChecksum(chunk)
 
@@ -51,14 +44,7 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
       val data        = (1 to size).toArray
       val sharedChunk = Chunk.fromArray(data)
 
-      def sumChunk(c: Chunk[Int]): Int = {
-        var s   = 0
-        val iter = c.chunkIterator
-        while (iter.hasNext) {
-          s += iter.next()
-        }
-        s
-      }
+      def sumChunk(c: Chunk[Int]): Int = c.foldLeft(0)(_ + _)
 
       val expected = data.sum
 
@@ -83,7 +69,7 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
     },
 
     test("ZIO.collectAllPar with indexed elements guarantees completeness and integrity") {
-      check(Gen.chunkOfBound(10, 100)(Gen.int)) { chunk =>
+      check(Gen.chunkOfBounded(10, 100)(Gen.int)) { chunk =>
         val indexed = chunk.zipWithIndex
         val effects = indexed.map { case (value, index) =>
           ZIO.succeed((value, index))
@@ -113,8 +99,8 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
 
   private def batchProcessingSuite = suite("Batch Processing")(
     test("Chunk.grouped(n) produces correct batch sizes for parallel processing") {
-      check(Gen.chunkOfBound(10, 100)(Gen.int), Gen.int(1, 10)) { (chunk, n) =>
-        val groups = chunk.grouped(n)
+      check(Gen.chunkOfBounded(10, 100)(Gen.int), Gen.int(1, 10)) { (chunk, n) =>
+        val groups = Chunk.fromIterable(chunk.grouped(n))
         for {
           results <- ZIO.foreachPar(groups)(group => ZIO.succeed(group.length))
         } yield {
@@ -131,7 +117,7 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
       val size  = 3
       val step  = 2
       // Windows: [1,2,3], [3,4,5], [5,6,7], [7,8,9], [9,10]
-      val windows = chunk.sliding(size, step)
+      val windows = Chunk.fromIterable(chunk.sliding(size, step))
       for {
         sums <- ZIO.foreachPar(windows)(w => ZIO.succeed(w.foldLeft(0)(_ + _)))
       } yield assertTrue(sums == Chunk(6, 12, 18, 24, 19))
@@ -149,7 +135,7 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
           var i = 0
           while (i < n) {
             c = c ++ chunk
-            i += 1
+            i = i + 1
           }
         }
         chunkEnd   <- Clock.nanoTime
@@ -159,7 +145,7 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
           var i = 0
           while (i < n) {
             l = l ++ list
-            i += 1
+            i = i + 1
           }
         }
         listEnd    <- Clock.nanoTime
@@ -179,14 +165,7 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
 
       // Zero-copy verification: Check that the internal references are the same
       // while allowing parallel computation on disjoint views.
-      def sumLong(c: Chunk[Int]): Long = {
-        var sum  = 0L
-        val iter = c.chunkIterator
-        while (iter.hasNext) {
-          sum += iter.next()
-        }
-        sum
-      }
+      def sumLong(c: Chunk[Int]): Long = c.foldLeft(0L)(_ + _)
 
       for {
         results <- ZIO.collectAllPar(List(
@@ -194,17 +173,13 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
                      ZIO.succeed(sumLong(rightSlice))
                    ))
       } yield {
-        var totalSum = 0L
-        val iter     = results.iterator
-        while (iter.hasNext) {
-          totalSum += iter.next()
-        }
+        val totalSum = results.foldLeft(0L)(_ + _)
 
         var expected = 0L
         var i        = 0
         while (i < array.length) {
-          expected += array(i)
-          i += 1
+          expected = expected + array(i)
+          i = i + 1
         }
 
         assertTrue(totalSum == expected) &&
