@@ -100,7 +100,7 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
   private def batchProcessingSuite = suite("Batch Processing")(
     test("Chunk.grouped(n) produces correct batch sizes for parallel processing") {
       check(Gen.chunkOfBounded(10, 100)(Gen.int), Gen.int(1, 10)) { (chunk, n) =>
-        val groups = Chunk.fromIterable(chunk.grouped(n))
+        val groups = Chunk.fromIterator(chunk.grouped(n))
         for {
           results <- ZIO.foreachPar(groups)(group => ZIO.succeed(group.length))
         } yield {
@@ -117,7 +117,7 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
       val size  = 3
       val step  = 2
       // Windows: [1,2,3], [3,4,5], [5,6,7], [7,8,9], [9,10]
-      val windows = Chunk.fromIterable(chunk.sliding(size, step))
+      val windows = Chunk.fromIterator(chunk.sliding(size, step))
       for {
         sums <- ZIO.foreachPar(windows)(w => ZIO.succeed(w.foldLeft(0)(_ + _)))
       } yield assertTrue(sums == Chunk(6, 12, 18, 24, 19))
