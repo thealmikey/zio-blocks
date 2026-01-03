@@ -13,6 +13,7 @@ object ChunkSpec extends ZIOSpecDefault {
     transformationSuite,
     bitwiseSuite,
     stringEncodingSuite,
+    chunkBuilderSuite,
     threadSafetySuite,
     edgeCasesSuite
   )
@@ -154,6 +155,64 @@ object ChunkSpec extends ZIOSpecDefault {
         c1.zip(c2).toList == List((1, "a"), (2, "b")),
         c1.zipWith(c2)((i, s) => s + i).toList == List("a1", "b2"),
         c1.zipWithIndex.toList == List((1, 0), (2, 1))
+      )
+    }
+  )
+
+  private val chunkBuilderSuite = suite("ChunkBuilder")(
+    test("specialized primitive builders") {
+      def testBuilder[A: ClassTag](elems: List[A], expectedClass: String) = {
+        // 1. Test empty
+        val emptyResult = ChunkBuilder.make[A]().result()
+
+        // 2. Test single
+        val singleBuilder = ChunkBuilder.make[A]()
+        if (elems.nonEmpty) singleBuilder.addOne(elems.head)
+        val singleResult = singleBuilder.result()
+
+        // 3. Test multiple
+        val builder = ChunkBuilder.make[A]()
+        elems.foreach(builder.addOne)
+        val result = builder.result()
+
+        val className = result.getClass.getName
+        val array     = result.toArray
+
+        assertTrue(
+          emptyResult.isEmpty,
+          emptyResult == Chunk.empty,
+          if (elems.nonEmpty) singleResult.length == 1 else true,
+          if (elems.nonEmpty) singleResult(0) == elems.head else true,
+          result.length == elems.length,
+          result.toList == elems,
+          // result() for > 1 elements must return specialized array chunk
+          if (elems.length > 1) className.contains(expectedClass) else true,
+          // Verify internal storage is primitive to ensure no boxing occurred
+          if (elems.length > 1) array.getClass.getComponentType.isPrimitive else true
+        )
+      }
+
+      testBuilder[Byte](List(1, 2, 3).map(_.toByte), "ByteArray") &&
+      testBuilder[Short](List(1, 2, 3).map(_.toShort), "ShortArray") &&
+      testBuilder[Int](List(1, 2, 3), "IntArray") &&
+      testBuilder[Long](List(1L, 2L, 3L), "LongArray") &&
+      testBuilder[Float](List(1.0f, 2.0f, 3.0f), "FloatArray") &&
+      testBuilder[Double](List(1.0, 2.0, 3.0), "DoubleArray") &&
+      testBuilder[Boolean](List(true, false, true), "BooleanArray") &&
+      testBuilder[Char](List('a', 'b', 'c'), "CharArray")
+    },
+    test("generic reference builder") {
+      val builder = ChunkBuilder.make[String]()
+      builder.addOne("foo").addOne("bar")
+      val result = builder.result()
+      assertTrue(
+        result.length == 2,
+        result(0) == "foo",
+        result(1) == "bar",
+        result.toList == List("foo", "bar"),
+        // References should use the Generic/Arr implementation
+        result.getClass.getName.contains("Arr"),
+        !result.toArray.getClass.getComponentType.isPrimitive
       )
     }
   )
