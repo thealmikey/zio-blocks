@@ -17,9 +17,9 @@ object ChunkBenchmark extends ZIOSpecDefault {
   ) @@ TestAspect.tag("benchmark") @@ TestAspect.sequential
 
   private def time[A](f: => A): (A, Long) = {
-    val start = System.currentTimeMillis()
+    val start = java.lang.System.currentTimeMillis()
     val res   = f
-    val end   = System.currentTimeMillis()
+    val end   = java.lang.System.currentTimeMillis()
     (res, end - start)
   }
 
