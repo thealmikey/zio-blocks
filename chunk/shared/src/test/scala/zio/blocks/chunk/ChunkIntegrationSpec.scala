@@ -8,7 +8,8 @@ import scala.collection.mutable.ArrayBuffer
 object ChunkIntegrationSpec extends ZIOSpecDefault {
 
   def spec = suite("ChunkIntegrationSpec")(
-    fiberSafeSharingSuite
+    fiberSafeSharingSuite,
+    parallelProcessingSuite
   )
 
   val fiberSafeSharingSuite = suite("fiberSafeSharingSuite")(
@@ -92,6 +93,45 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
         assertTrue(sharedChunk.length == size) &&
         assertTrue(sharedBuffer.length == size)
       }
+    }
+  )
+
+  val parallelProcessingSuite = suite("parallelProcessingSuite")(
+    test("ZIO.foreachPar preserves size and value invariants") {
+      check(Gen.chunkOf(Gen.int)) { chunk =>
+        for {
+          result <- ZIO.foreachPar(chunk)(a => ZIO.succeed(a))
+        } yield assertTrue(result.size == chunk.length) &&
+          assertTrue(result.toList == chunk.toList)
+      }
+    },
+
+    test("ZIO.collectAllPar with indexed elements guarantees completeness and integrity") {
+      check(Gen.chunkOfBound(10, 100)(Gen.int)) { chunk =>
+        val indexed = chunk.zipWithIndex
+        val effects = indexed.map { case (value, index) =>
+          ZIO.succeed((value, index))
+        }
+        for {
+          result <- ZIO.collectAllPar(effects)
+          // Sort by original index to verify values
+          restored = result.sortBy(_._2).map(_._1)
+        } yield assertTrue(result.size == chunk.length) &&
+          assertTrue(restored.toList == chunk.toList)
+      }
+    },
+
+    test("stress-test: 1000+ parallel operations with timing via ZIO.Clock") {
+      val opCount = 2000
+      val chunk   = Chunk.fromArray((1 to opCount).toArray)
+      for {
+        startNanos <- Clock.nanoTime
+        result     <- ZIO.foreachPar(chunk)(i => ZIO.succeed(i * 2))
+        endNanos   <- Clock.nanoTime
+        durationMs = (endNanos - startNanos) / 1000000
+        _          <- ZIO.logAnnotate("duration", s"${durationMs}ms")(ZIO.logDebug("Parallel stress test complete"))
+      } yield assertTrue(result.size == opCount) &&
+        assertTrue(result(opCount - 1) == opCount * 2)
     }
   )
 }
