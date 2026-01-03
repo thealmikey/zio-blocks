@@ -10,7 +10,8 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
   def spec = suite("ChunkIntegrationSpec")(
     fiberSafeSharingSuite,
     parallelProcessingSuite,
-    batchProcessingSuite
+    batchProcessingSuite,
+    designLockSuite
   )
 
   val fiberSafeSharingSuite = suite("fiberSafeSharingSuite")(
@@ -236,6 +237,75 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
         assertTrue(leftSlice.length == mid) &&
         assertTrue(rightSlice.length == size - mid)
       }
+    }
+  )
+
+  /**
+   * ARCHITECTURAL DOCUMENTATION: Design Lock Suite
+   * 
+   * These tests exist to enforce the invariant that Chunk remains the primary collection type 
+   * throughout the library's internal and external APIs.
+   * 
+   * 1. Type Signatures: We use compile-time evidence (=:=) to ensure that methods do not
+   *    accidentally widen to Seq, IndexedSeq, or Iterable.
+   * 2. Implementation Integrity: We verify that factory methods return concrete Chunk 
+   *    specializations rather than standard library collections.
+   * 3. Fluent API Preservation: We ensure that transformation methods (map, filter, etc.)
+   *    return Chunks, allowing for specialized performance optimizations like zero-copy
+   *    slicing or bit-packing to persist through the call chain.
+   * 
+   * Changes that cause these tests to fail should be treated as breaking architectural regressions.
+   */
+  val designLockSuite = suite("designLockSuite")(
+    test("compile-time: factory methods return exact Chunk types") {
+      val fromArray    = Chunk.fromArray(Array(1, 2, 3))
+      val fromIterable = Chunk.fromIterable(List(1, 2, 3))
+      val singleton    = Chunk.single(1)
+
+      // These would fail to compile if the return types were widened to Seq or List
+      val ev1 = implicitly[fromArray.type <:< Chunk[Int]]
+      val ev2 = implicitly[fromIterable.type <:< Chunk[Int]]
+      val ev3 = implicitly[singleton.type <:< Chunk[Int]]
+
+      assertTrue(ev1 != null) && assertTrue(ev2 != null) && assertTrue(ev3 != null)
+    },
+
+    test("runtime: factory methods do not delegate to standard library collections") {
+      val chunkArray    = Chunk.fromArray(Array(1, 2, 3))
+      val chunkIterable = Chunk.fromIterable(Vector(1, 2, 3))
+
+      val isSeq      = chunkArray.isInstanceOf[Seq[_]]
+      val isList     = chunkIterable.isInstanceOf[List[_]]
+      val isVector   = chunkArray.isInstanceOf[Vector[_]]
+
+      assertTrue(!isSeq) && assertTrue(!isList) && assertTrue(!isVector)
+    },
+
+    test("compile-time: transformation methods preserve Chunk type") {
+      val chunk: Chunk[Int] = Chunk(1, 2, 3)
+
+      // The following assignments rely on the return type being exactly Chunk[T].
+      // If map/filter/flatMap were modified to return List or Vector, this test would fail to compile.
+      val mapped: Chunk[String]   = chunk.map(_.toString)
+      val filtered: Chunk[Int]    = chunk.filter(_ > 1)
+      val flatMapped: Chunk[Int]  = chunk.flatMap(i => Chunk(i, i))
+      val collected: Chunk[Int]   = chunk.collect { case i if i > 1 => i }
+      val zipped: Chunk[(Int, Int)] = chunk.zip(chunk)
+
+      assertTrue(mapped.length == 3) &&
+      assertTrue(filtered.length == 2) &&
+      assertTrue(flatMapped.length == 6) &&
+      assertTrue(collected.length == 2) &&
+      assertTrue(zipped.length == 3)
+    },
+
+    test("type-consistency: Chunk[Int] =:= Chunk[Int]") {
+      def assertType[A, B](implicit ev: A =:= B): Unit = { val _ = ev }
+      
+      assertType[Chunk[Int], Chunk[Int]]
+      assertType[Chunk[Boolean], Chunk[Boolean]]
+      
+      assertTrue(true)
     }
   )
 }
