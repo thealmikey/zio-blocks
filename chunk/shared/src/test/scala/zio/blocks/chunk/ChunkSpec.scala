@@ -12,6 +12,7 @@ object ChunkSpec extends ZIOSpecDefault {
     concatenationSuite,
     transformationSuite,
     bitwiseSuite,
+    stringEncodingSuite,
     threadSafetySuite,
     edgeCasesSuite
   )
@@ -153,6 +154,43 @@ object ChunkSpec extends ZIOSpecDefault {
         c1.zip(c2).toList == List((1, "a"), (2, "b")),
         c1.zipWith(c2)((i, s) => s + i).toList == List("a1", "b2"),
         c1.zipWithIndex.toList == List((1, 0), (2, 1))
+      )
+    }
+  )
+
+  private val stringEncodingSuite = suite("String Encoding")(
+    test("asString") {
+      val empty = Chunk.empty[Char]
+      val single = Chunk('a')
+      val multi = Chunk('h', 'e', 'l', 'l', 'o')
+      assertTrue(
+        empty.asString == "",
+        single.asString == "a",
+        multi.asString == "hello"
+      )
+    },
+    test("asBase64String") {
+      val empty = Chunk.empty[Byte]
+      val single = Chunk(1.toByte)
+      val multi = Chunk("hello".getBytes("UTF-8"): _*)
+
+      def expected(bytes: Array[Byte]): String =
+        java.util.Base64.getEncoder.encodeToString(bytes)
+
+      assertTrue(
+        empty.asBase64String == expected(Array.emptyByteArray),
+        single.asBase64String == expected(Array(1.toByte)),
+        multi.asBase64String == expected("hello".getBytes("UTF-8"))
+      )
+    },
+    test("toBinaryString") {
+      val empty = Chunk.empty[Byte]
+      val single = Chunk(1.toByte)
+      val multi = Chunk(1.toByte, 2.toByte, 255.toByte) // 255 is -1 in signed byte
+      assertTrue(
+        empty.toBinaryString == "",
+        single.toBinaryString == "00000001",
+        multi.toBinaryString == "00000001" + "00000010" + "11111111"
       )
     }
   )
