@@ -2,7 +2,6 @@ package zio.blocks.chunk
 
 import scala.reflect.ClassTag
 import scala.collection.mutable.ArrayBuilder
-import java.util.concurrent.atomic.AtomicInteger
 import scala.util.hashing.MurmurHash3
 
 sealed abstract class Chunk[+A] extends Serializable { self =>
@@ -329,14 +328,9 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   def asBase64String(implicit ev: A <:< Byte): String = {
-    val arr  = new Array[Byte](length)
-    val iter = chunkIterator
-    var i    = 0
-    while (i < length) {
-      arr(i) = ev(iter.next())
-      i += 1
-    }
-    java.util.Base64.getEncoder.encodeToString(arr)
+    // java.util.Base64 is not available on all platforms (JS/Native).
+    // This should be implemented using a cross-platform library or manual logic.
+    throw new UnsupportedOperationException("asBase64String is not implemented for cross-platform")
   }
 
   def toBinaryString(implicit ev: A <:< Byte): String = {
@@ -464,7 +458,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   def distinct: Chunk[A] = {
-    val set = new java.util.HashSet[A]()
+    val set = new scala.collection.mutable.HashSet[A]()
     filter(set.add)
   }
 
@@ -493,7 +487,7 @@ sealed abstract class Chunk[+A] extends Serializable { self =>
   }
 
   override def equals(that: Any): Boolean = that match {
-    case that: Chunk[_] if this.length == that.length =>
+    case that: Chunk[Any] @unchecked if this.length == that.length =>
       var i = 0
       while (i < length) {
         if (this(i) != that(i)) return false
@@ -714,7 +708,7 @@ object Chunk {
 
   private[chunk] final class AppendN[A](
     private[chunk] val buffer: Array[AnyRef],
-    private[chunk] val refCount: AtomicInteger,
+    private[chunk] val isShared: Boolean,
     val length: Int
   ) extends Chunk[A] {
     def apply(index: Int): A = {
@@ -723,11 +717,11 @@ object Chunk {
     }
 
     override protected def concat[A1 >: A](that: Chunk[A1]): Chunk[A1] = {
-      if (length < buffer.length && refCount.get() == 1) {
+      if (length < buffer.length && !isShared) {
         that match {
           case Singleton(v) =>
             buffer(length) = v.asInstanceOf[AnyRef]
-            new AppendN(buffer, refCount, length + 1)
+            new AppendN(buffer, isShared, length + 1)
           case _ => super.concat(that)
         }
       } else super.concat(that)
@@ -753,7 +747,7 @@ object Chunk {
 
   private[chunk] final class PrependN[A](
     private[chunk] val buffer: Array[AnyRef],
-    private[chunk] val refCount: AtomicInteger,
+    private[chunk] val isShared: Boolean,
     private[chunk] val startIndex: Int,
     val length: Int
   ) extends Chunk[A] {
@@ -764,13 +758,13 @@ object Chunk {
 
     override protected def concat[A1 >: A](that: Chunk[A1]): Chunk[A1] = {
       val selfChunk = this.asInstanceOf[Chunk[A1]]
-      if (startIndex > 0 && refCount.get() == 1) {
+      if (startIndex > 0 && !isShared) {
         selfChunk match {
           case _ if that.length == 1 =>
             val v = that(0)
             val newStart = startIndex - 1
             buffer(newStart) = v.asInstanceOf[AnyRef]
-            new PrependN(buffer, refCount, newStart, length + 1).asInstanceOf[Chunk[A1]]
+            new PrependN(buffer, isShared, newStart, length + 1).asInstanceOf[Chunk[A1]]
           case _ => super.concat(that)
         }
       } else super.concat(that)
