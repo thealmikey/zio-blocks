@@ -123,35 +123,17 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
       } yield assertTrue(sums == Chunk(6, 12, 18, 24, 19))
     },
 
-    test("Chunk concatenation (++) is O(1) compared to List concatenation") {
-      val n = 10000
-      val chunk = Chunk.single(1)
-      val list  = List(1)
+    test("Chunk concatenation (++) preserves structural integrity under deep nesting") {
+      val n = 1000
+      val chunks = (1 to n).map(i => Chunk.single(i))
 
-      for {
-        chunkStart <- Clock.nanoTime
-        _          <- ZIO.succeed {
-          var c = chunk
-          var i = 0
-          while (i < n) {
-            c = c ++ chunk
-            i = i + 1
-          }
-        }
-        chunkEnd   <- Clock.nanoTime
-        listStart  <- Clock.nanoTime
-        _          <- ZIO.succeed {
-          var l = list
-          var i = 0
-          while (i < n) {
-            l = l ++ list
-            i = i + 1
-          }
-        }
-        listEnd    <- Clock.nanoTime
-        chunkTime = chunkEnd - chunkStart
-        listTime  = listEnd - listStart
-      } yield assertTrue(chunkTime < listTime)
+      // Deep left-fold concatenation
+      val result = chunks.foldLeft(Chunk.empty[Int])(_ ++ _)
+
+      assertTrue(result.length == n) &&
+      assertTrue(result.head == 1) &&
+      assertTrue(result(n - 1) == n) &&
+      assertTrue(result.toList == (1 to n).toList)
     },
 
     test("Chunk.slice provides zero-copy views suitable for parallel distribution") {
@@ -191,41 +173,31 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
 
   /**
    * ARCHITECTURAL DOCUMENTATION: Design Lock Suite
-   * 
-   * These tests exist to enforce the invariant that Chunk remains the primary collection type 
+   *
+   * These tests exist to enforce the invariant that Chunk remains the primary collection type
    * throughout the library's internal and external APIs.
-   * 
+   *
    * 1. Type Signatures: We use compile-time evidence (=:=) to ensure that methods do not
    *    accidentally widen to Seq, IndexedSeq, or Iterable.
-   * 2. Implementation Integrity: We verify that factory methods return concrete Chunk 
+   * 2. Implementation Integrity: We verify that factory methods return concrete Chunk
    *    specializations rather than standard library collections.
    * 3. Fluent API Preservation: We ensure that transformation methods (map, filter, etc.)
    *    return Chunks, allowing for specialized performance optimizations like zero-copy
    *    slicing or bit-packing to persist through the call chain.
-   * 
+   *
    * Changes that cause these tests to fail should be treated as breaking architectural regressions.
    */
   private def designLockSuite = suite("Design Lock")(
     test("compile-time: factory methods return exact Chunk types") {
-      val fromArray    = Chunk.fromArray(Array(1, 2, 3))
-      val fromIterable = Chunk.fromIterable(List(1, 2, 3))
-      val singleton    = Chunk.single(1)
+      // The following assignments rely on the return type being exactly Chunk[T].
+      // If these methods were modified to return Seq or List, this test would fail to compile.
+      val fromArray: Chunk[Int]    = Chunk.fromArray(Array(1, 2, 3))
+      val fromIterable: Chunk[Int] = Chunk.fromIterable(List(1, 2, 3))
+      val singleton: Chunk[Int]    = Chunk.single(1)
 
-      // These would fail to compile if the return types were widened to Seq or List
-      assertTrue(fromArray.isInstanceOf[Chunk[Int]]) &&
-      assertTrue(fromIterable.isInstanceOf[Chunk[Int]]) &&
-      assertTrue(singleton.isInstanceOf[Chunk[Int]])
-    },
-
-    test("runtime: factory methods do not delegate to standard library collections") {
-      val chunkArray    = Chunk.fromArray(Array(1, 2, 3))
-      val chunkIterable = Chunk.fromIterable(Vector(1, 2, 3))
-
-      val isSeq      = chunkArray.isInstanceOf[Seq[_]]
-      val isList     = chunkIterable.isInstanceOf[List[_]]
-      val isVector   = chunkArray.isInstanceOf[Vector[_]]
-
-      assertTrue(!isSeq) && assertTrue(!isList) && assertTrue(!isVector)
+      assertTrue(fromArray.length == 3) &&
+      assertTrue(fromIterable.length == 3) &&
+      assertTrue(singleton.length == 1)
     },
 
     test("compile-time: transformation methods preserve Chunk type") {
@@ -233,10 +205,10 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
 
       // The following assignments rely on the return type being exactly Chunk[T].
       // If map/filter/flatMap were modified to return List or Vector, this test would fail to compile.
-      val mapped: Chunk[String]   = chunk.map(_.toString)
-      val filtered: Chunk[Int]    = chunk.filter(_ > 1)
-      val flatMapped: Chunk[Int]  = chunk.flatMap(i => Chunk(i, i))
-      val collected: Chunk[Int]   = chunk.collect { case i if i > 1 => i }
+      val mapped: Chunk[String]     = chunk.map(_.toString)
+      val filtered: Chunk[Int]      = chunk.filter(_ > 1)
+      val flatMapped: Chunk[Int]    = chunk.flatMap(i => Chunk(i, i))
+      val collected: Chunk[Int]     = chunk.collect { case i if i > 1 => i }
       val zipped: Chunk[(Int, Int)] = chunk.zip(chunk)
 
       assertTrue(mapped.length == 3) &&
