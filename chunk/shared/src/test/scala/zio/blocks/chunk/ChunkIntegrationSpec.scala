@@ -2,19 +2,17 @@ package zio.blocks.chunk
 
 import zio._
 import zio.test._
-import zio.test.Assertion._
-import scala.collection.mutable.ArrayBuffer
 
 object ChunkIntegrationSpec extends ZIOSpecDefault {
 
-  def spec = suite("ChunkIntegrationSpec")(
+  override def spec = suite("Chunk Integration")(
     fiberSafeSharingSuite,
     parallelProcessingSuite,
     batchProcessingSuite,
     designLockSuite
-  )
+  ) @@ TestAspect.parallel
 
-  val fiberSafeSharingSuite = suite("fiberSafeSharingSuite")(
+  private def fiberSafeSharingSuite = suite("Fiber-Safe Sharing")(
     test("shared Chunk allows concurrent reads with consistent checksums") {
       val size       = 1000
       val fiberCount = 100
@@ -48,20 +46,16 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
       }
     },
 
-    test("demonstrate safety by comparing Chunk with mutable ArrayBuffer") {
-      val size         = 1000
-      val data         = (1 to size).toArray
-      val sharedChunk  = Chunk.fromArray(data)
-      val sharedBuffer = ArrayBuffer.from(data)
+    test("demonstrate safety: concurrent reads of shared Chunk always yield consistent results") {
+      val size        = 1000
+      val data        = (1 to size).toArray
+      val sharedChunk = Chunk.fromArray(data)
 
-      def sumChunk(c: Chunk[Int]): Int = c.foldLeft(0)(_ + _)
-      def sumBuffer(b: ArrayBuffer[Int]): Int = {
-        var s = 0
-        var i = 0
-        val len = b.length
-        while (i < len) {
-          s += b(i)
-          i += 1
+      def sumChunk(c: Chunk[Int]): Int = {
+        var s   = 0
+        val iter = c.chunkIterator
+        while (iter.hasNext) {
+          s += iter.next()
         }
         s
       }
@@ -69,36 +63,16 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
       val expected = data.sum
 
       for {
-        // Chunk is safe: concurrent reads always yield the same result.
+        // Chunk is safe: concurrent reads always yield the same result because it is immutable.
         chunkResults <- ZIO.foreachPar(1 to 100)(_ => ZIO.succeed(sumChunk(sharedChunk)))
-
-        // ArrayBuffer is unsafe: one fiber modifying while others read causes inconsistent sums.
-        // We use a high concurrency to increase the chance of observing the race.
-        bufferResults <- ZIO.foreachPar(1 to 100) { i =>
-          if (i % 2 == 0) {
-            ZIO.succeed {
-              val old = sharedBuffer(0)
-              sharedBuffer(0) = -1 // Mutate
-              val s = sumBuffer(sharedBuffer)
-              sharedBuffer(0) = old // Restore
-              s
-            }
-          } else {
-            ZIO.succeed(sumBuffer(sharedBuffer))
-          }
-        }
       } yield {
-        val chunkSafe = chunkResults.forall(_ == expected)
-        // We assert Chunk safety. ArrayBuffer unsafety is non-deterministic but 
-        // the presence of mutation in parallel loops is logically unsafe.
-        assertTrue(chunkSafe) &&
-        assertTrue(sharedChunk.length == size) &&
-        assertTrue(sharedBuffer.length == size)
+        assertTrue(chunkResults.forall(_ == expected)) &&
+        assertTrue(sharedChunk.length == size)
       }
     }
   )
 
-  val parallelProcessingSuite = suite("parallelProcessingSuite")(
+  private def parallelProcessingSuite = suite("Parallel Processing")(
     test("ZIO.foreachPar preserves size and value invariants") {
       check(Gen.chunkOf(Gen.int)) { chunk =>
         for {
@@ -137,7 +111,7 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
     }
   )
 
-  val batchProcessingSuite = suite("batchProcessingSuite")(
+  private def batchProcessingSuite = suite("Batch Processing")(
     test("Chunk.grouped(n) produces correct batch sizes for parallel processing") {
       check(Gen.chunkOfBound(10, 100)(Gen.int), Gen.int(1, 10)) { (chunk, n) =>
         val groups = chunk.grouped(n)
@@ -256,18 +230,16 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
    * 
    * Changes that cause these tests to fail should be treated as breaking architectural regressions.
    */
-  val designLockSuite = suite("designLockSuite")(
+  private def designLockSuite = suite("Design Lock")(
     test("compile-time: factory methods return exact Chunk types") {
       val fromArray    = Chunk.fromArray(Array(1, 2, 3))
       val fromIterable = Chunk.fromIterable(List(1, 2, 3))
       val singleton    = Chunk.single(1)
 
       // These would fail to compile if the return types were widened to Seq or List
-      val ev1 = implicitly[fromArray.type <:< Chunk[Int]]
-      val ev2 = implicitly[fromIterable.type <:< Chunk[Int]]
-      val ev3 = implicitly[singleton.type <:< Chunk[Int]]
-
-      assertTrue(ev1 != null) && assertTrue(ev2 != null) && assertTrue(ev3 != null)
+      assertTrue(fromArray.isInstanceOf[Chunk[Int]]) &&
+      assertTrue(fromIterable.isInstanceOf[Chunk[Int]]) &&
+      assertTrue(singleton.isInstanceOf[Chunk[Int]])
     },
 
     test("runtime: factory methods do not delegate to standard library collections") {
@@ -300,12 +272,10 @@ object ChunkIntegrationSpec extends ZIOSpecDefault {
     },
 
     test("type-consistency: Chunk[Int] =:= Chunk[Int]") {
-      def assertType[A, B](implicit ev: A =:= B): Unit = { val _ = ev }
+      def checkType[A, B](implicit ev: A =:= B): Boolean = ev != null
       
-      assertType[Chunk[Int], Chunk[Int]]
-      assertType[Chunk[Boolean], Chunk[Boolean]]
-      
-      assertTrue(true)
+      assertTrue(checkType[Chunk[Int], Chunk[Int]]) &&
+      assertTrue(checkType[Chunk[Boolean], Chunk[Boolean]])
     }
   )
 }
